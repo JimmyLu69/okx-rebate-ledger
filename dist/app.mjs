@@ -1,4 +1,5 @@
 import {EVM,SOL,configureWallets,format,canonical,validAddress,mergeRecords,summarize,byAddress,autoAccount} from './ledger.mjs';
+import {lookupPrices} from './prices.mjs';
 import {valueGroups,addressTotals,filterMinimum} from './valuation.mjs';
 import {scanEVM,inspectEVM,scanSolana} from './api.mjs';
 import {scanLinea,scanBSC,inspectExtended} from './extended-api.mjs';
@@ -28,7 +29,7 @@ const allows=(id,value)=>!selectedValues(id).length||selectedValues(id).includes
 const valued=()=>valueGroups(summarize(autoAccount(state.records)),prices,preferences);
 const visibleGroups=groups=>filterMinimum(groups.filter(matches).filter(statusMatches),$('minimumUsd').value,$('minimumField').value);
 const usd=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:4})+' U';
-async function refreshPrices(){if(priceBusy)return;priceBusy=true;$('priceStatus').textContent='正在查询报价…';const assets=[...new Map(summarize(autoAccount(state.records)).map(g=>[g.chain+':'+g.asset,{chain:g.chain,asset:g.asset}])).values()];let failed=false;try{for(let i=0;i<assets.length;i+=30){const r=await fetch('/api/prices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assets:assets.slice(i,i+30)})});if(!r.ok)throw Error();const data=await r.json();Object.assign(prices,data.prices);if(data.errors?.length)failed=true}}catch{failed=true}finally{priceBusy=false;$('priceStatus').textContent=(failed?'部分报价不可用 · ':'')+'报价查询 '+new Date().toLocaleTimeString('zh-CN');render()}}
+async function refreshPrices(){if(priceBusy)return;priceBusy=true;$('priceStatus').textContent='正在查询报价…';const assets=[...new Map(summarize(autoAccount(state.records)).map(g=>[g.chain+':'+g.asset,{chain:g.chain,asset:g.asset}])).values()];let failed=false;try{for(let i=0;i<assets.length;i+=30){const batch=assets.slice(i,i+30);let data=await lookupPrices(batch);Object.assign(prices,data.prices);if(data.errors?.length){const missing=batch.filter(a=>!data.prices[a.chain+':'+a.asset]);if(missing.length){const r=await fetch('/api/prices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assets:missing})});if(r.ok){const fallback=await r.json();Object.assign(prices,fallback.prices);failed ||= !!fallback.errors?.length}else failed=true}}}}catch{failed=true}finally{priceBusy=false;$('priceStatus').textContent=(failed?'部分报价不可用 · ':'')+'报价查询 '+new Date().toLocaleTimeString('zh-CN');render()}}
 function save(){try{localStorage.setItem(walletStorage(),JSON.stringify(state));localStorage.setItem('rebate-wallets-v1',JSON.stringify({evm:EVM,sol:SOL}));localStorage.setItem('rebate-ledger-v1',JSON.stringify(state))}catch{storageWarn='浏览器存储不足或不可用，请立即导出备份，避免刷新丢失数据。'}}
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',6000)}
 const statusText={unpaid:'未返还',partial:'返还不足',settled:'已返足够',over:'返还超额'};
