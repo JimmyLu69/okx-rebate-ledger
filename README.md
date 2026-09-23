@@ -1,0 +1,68 @@
+# OKX 返佣账本
+
+只读核对 OKX Wallet 邀请返佣和手动返还。按被邀请地址、网络、币种精确记账，支持 EVM 和 Solana。不会连接钱包、签名或转账。
+
+## 使用
+
+1. 打开「数据源」，填写自己的 EVM / Solana 收款地址（可仅填写其中一种）。
+2. 填写所需免费数据源凭证，选择网络，点击「保存到本机」。
+3. 点击「同步历史」。首次扫描可能较慢，保持页面打开；暂停后用「继续未完成」接着查询。
+4. 网络、状态、原生币/代币、具体合约均可多选（Ctrl / Command + 点击）。地址金额下限可按累计应返、累计已返、剩余待返选择口径；口径基于当前筛选结果，无报价的地址保留。
+5. 默认差额绝对值严格小于 0.1 U 视为足额；设置里可关闭或修改。实际币数差额始终保留。
+
+CoinGecko 提供原生币美元参考价，DEX Screener 按链和合约匹配代币价格，选择流动性至少 10,000 美元的最高流动性交易对。每五分钟刷新，可手动更新；超过十五分钟的报价不参与小额足额判断。U 是美元参考价值，不是历史成交价或保证可成交金额。缺少可靠报价时明确标注，不将同名币或无报价币视为 1 U / 0 U。
+
+不同网络、不同合约不互相冲抵。地址头部显示当前筛选范围的应返、已返、剩余、超额及净差额估值。状态按每个网络和币种判断；金额是链上原始整数精度，阈值使用十进制整数比较。
+
+## 部署到 Netlify
+
+[一键部署到 Netlify](https://app.netlify.com/start/deploy?repository=https://github.com/JimmyLu69/okx-rebate-ledger)
+
+或者在 Netlify 导入本 GitHub 仓库。`netlify.toml` 已配置：
+
+- Node.js 22 或更高版本
+- Build command: `npm run build:netlify`
+- Publish directory: `public`
+- Functions directory: `netlify/functions`
+
+不需要在 Netlify 设置任何私人 API Key。每个使用者在自己的浏览器填写自己的凭证。不要仅上传静态目录到不支持 Functions 的托管环境：Blockscout、OKX X Layer 和报价请求需要同源服务端接口。
+
+## 本地开发
+
+```sh
+npm test
+npm run preview
+```
+
+打开 `http://127.0.0.1:52567/`。可用 `REBATE_PREVIEW_PORT` 指定端口。应用无 npm 运行时依赖。
+
+## 数据源
+
+- [Blockscout](https://dev.blockscout.com/)：兼容网络的地址交易、内部转账、代币转账及回执。
+- [Helius](https://dashboard.helius.dev/)：Solana 交易历史和精确解析回执。
+- [NodeReal](https://dashboard.nodereal.io/)：BSC 历史与免费资产转账索引；不调用收费 debug trace。
+- [Etherscan](https://etherscan.io/myapikey)：Linea 历史。
+- [OKX 开发者平台](https://web3.okx.com/onchainos/dev-portal)：X Layer 历史，需要开发者 API Key、Secret、Passphrase。
+
+服务商免费额度、链覆盖和历史可用性以各自实际响应为准，额度耗尽或接口失败会显示未完成，不会自动购买。公共 RPC 或浏览器节点缺失历史时也不能视为零欠款。
+
+## 自动归属规则和边界
+
+EVM 解码新旧版本 OKX 返佣事件并核验实际到账；Solana 使用 OKX 路由标识、交易付款人及实际转账归属。向已识别被邀请地址的转出自动作为返还；同一地址的其他用途转出无法仅凭链上数据识别，因此结果需结合业务用途判断。未识别转账保留在本地历史及覆盖说明，不进入返佣汇总；没有「待核对」操作流程。只有所有分页和交易核验成功才标记历史查完。
+
+## 隐私
+
+仓库不包含真实账目、用户钱包默认值、API 密钥、导出文件或原项目 Git 历史。测试仅使用合成样例。
+
+账目按钱包组合分开保存在当前浏览器，切换钱包可恢复其进度。凭证按浏览器保存，可在设置清除；JSON 备份不包含凭证。浏览器存储不是加密保险库，请仅在信任的设备和站点保存。
+
+Blockscout 和 OKX 凭证经当前部署的服务端转发至对应供应商，服务端代码不记录、不持久保存凭证。其他链数据请求直连所配置供应商。报价只发送公开的链与代币合约，不发送钱包和账目。部署者应避免额外启用请求正文日志。
+
+## 结构
+
+- `dist/`：原生 HTML、CSS、浏览器 ES Modules 源码（不含用户数据）。
+- `server/`：限定上游域名、只读路径和参数的查询代理。
+- `netlify/functions/api.mjs`：Netlify Request / Response 适配层。
+- `scripts/build-netlify.mjs`：构建纯静态发布目录，服务端代码不公开为静态资源。
+- `scripts/build-worker.mjs` / `scripts/preview.mjs`：本地 Worker 兼容预览。
+- `tests/`：精度、归属、分页、签名、报价与阈值回归测试。

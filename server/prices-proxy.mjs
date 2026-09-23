@@ -1,0 +1,13 @@
+const priceChains={'1':'ethereum','56':'bsc','8453':'base','137':'polygon','10':'optimism','42161':'arbitrum','59144':'linea','57073':'ink','196':'xlayer',solana:'solana'};
+const nativeIds={'1':'ethereum','4663':'ethereum','8453':'ethereum','10':'ethereum','42161':'ethereum','59144':'ethereum','57073':'ethereum','56':'binancecoin','137':'polygon-ecosystem-token','196':'okb','5042':'usd-coin',solana:'solana'};
+export async function handlePrices(request,fetcher=fetch){
+ const send=(status,data)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
+ if(request.method!=='POST')return send(405,{message:'POST required'});
+ if(request.headers.get('Origin')!==new URL(request.url).origin)return send(403,{message:'Origin mismatch'});
+ let assets;try{const text=await request.text();if(text.length>16000)throw Error();assets=JSON.parse(text).assets;if(!Array.isArray(assets)||assets.length>30||assets.some(a=>!a||!(a.chain==='solana'||/^\d{1,12}$/.test(a.chain))||!(a.asset==='native'||(a.chain==='solana'?/^[1-9A-HJ-NP-Za-km-z]{32,44}$/:/^0x[\da-fA-F]{40}$/).test(a.asset))))throw Error()}catch{return send(400,{message:'Invalid assets'})}
+ const prices={},errors=[];const get=async url=>{const r=await fetcher(url,{redirect:'manual',signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Price provider unavailable');return r.json()};
+ if(assets.some(a=>a.asset==='native'))try{const ids=[...new Set(assets.filter(a=>a.asset==='native'&&nativeIds[a.chain]).map(a=>nativeIds[a.chain]))];const result=await get('https://api.coingecko.com/api/v3/simple/price?ids='+ids.join(',')+'&vs_currencies=usd&include_last_updated_at=true');for(const a of assets.filter(a=>a.asset==='native')){const q=result[nativeIds[a.chain]];if(q?.usd>0&&q.last_updated_at)prices[a.chain+':native']={usd:String(q.usd),at:q.last_updated_at*1000,source:'CoinGecko'}}}catch{errors.push('原生币报价暂不可用')}
+ // Token identity is chain + exact contract, never the displayed ticker.
+ for(const chain of [...new Set(assets.filter(a=>a.asset!=='native').map(a=>a.chain))]){if(!priceChains[chain])continue;try{const wanted=assets.filter(a=>a.chain===chain&&a.asset!=='native');const pairs=await get('https://api.dexscreener.com/tokens/v1/'+priceChains[chain]+'/'+wanted.map(a=>a.asset).join(','));if(!Array.isArray(pairs))throw Error();for(const a of wanted){const eq=x=>chain==='solana'?x===a.asset:x?.toLowerCase()===a.asset.toLowerCase();const best=pairs.filter(q=>q.chainId===priceChains[chain]&&eq(q.baseToken?.address)&&Number(q.priceUsd)>0&&q.liquidity?.usd>=10000).sort((a,b)=>b.liquidity.usd-a.liquidity.usd)[0];if(best)prices[chain+':'+a.asset]={usd:best.priceUsd,at:Date.now(),source:'DEX Screener'}}}catch{errors.push(chain+' 代币报价暂不可用')}}
+ return send(200,{prices,errors});
+}

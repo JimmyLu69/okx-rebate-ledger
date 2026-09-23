@@ -1,0 +1,14 @@
+{
+  "name": "okx-rebate-ledger",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/build-worker.mjs && node --test tests/*.test.mjs",
+    "build": "node scripts/build-worker.mjs",
+    "preview": "node scripts/build-worker.mjs && node scripts/preview.mjs",
+    "build:netlify": "node scripts/build-netlify.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
