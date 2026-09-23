@@ -27,3 +27,7 @@ test('price relay matches exact base contract and rejects low liquidity / wrong-
  const asset='0x'+'1'.repeat(40);const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test'},body:JSON.stringify({assets:[{chain:'1',asset}]})});
  const result=await handlePrices(req,async()=>Response.json([{chainId:'bsc',baseToken:{address:asset},priceUsd:'999',liquidity:{usd:1e6}},{chainId:'ethereum',baseToken:{address:asset},priceUsd:'2',liquidity:{usd:20000}}]));assert.equal((await result.json()).prices['1:'+asset].usd,'2');
 });
+test('native price fallback succeeds when primary provider rate limits hosted IPs',async()=>{
+ const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test'},body:JSON.stringify({assets:[{chain:'1',asset:'native'},{chain:'8453',asset:'native'}]})});
+ const r=await handlePrices(req,async url=>url.includes('coingecko')?new Response('',{status:429}):Response.json([{chainId:'ethereum',baseToken:{address:'0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'},priceUsd:'2678.2',liquidity:{usd:1e6}}]));const data=await r.json();assert.deepEqual(data.errors,[]);assert.equal(data.prices['1:native'].usd,'2678.2');assert.equal(data.prices['8453:native'].usd,'2678.2');
+});
