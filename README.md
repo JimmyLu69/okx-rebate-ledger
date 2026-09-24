@@ -76,3 +76,9 @@ Blockscout 和 OKX 凭证经当前部署的服务端转发至对应供应商，�
 设置页可保存到本机、导出设置、导入设置。导入后点「保存到本机」生效；导出时可选择包含 API 凭证，这种文件应私下保管。钱包历史使用 IndexedDB 保存，导出为不含密钥的钱包绑定 JSON，包含原始记录、核验结果和扫描游标。新设备先导入设置，再导入对应钱包历史；不同钱包备份会被拒绝。旧版仅记录备份仍可导入，但没有可验证的扫描检查点，需要重新建立索引。
 
 查完后再次同步不会清空核验缓存。Linea、BSC、X Layer 从上次已扫描区块之后查询；Solana 以最新签名为边界；Blockscout 从最新页回查至原区块边界，保留 64 个区块重叠检查延迟入库，记录按 ID 去重、已核验交易不重复请求详情。旧版 Blockscout 检查点会使用本机已有交易建立边界。深于重叠范围的索引补录不能由增量模式保证发现。
+
+### Settlement 订单返佣
+
+BNB Chain 与 Base 的 `0x25ed72c3f671b626810a6db597dcfd50f215a423` 使用 `CommissionFeePaid` 的完整 orderUID 关联同回执 `Trade.owner`，并核对 UID 中的 owner、币种与实际到账总额。归属订单持有人，不能归属 Settlement 合约或交易发起的 solver。缺失或矛盾凭证保持待核对；批量订单按 UID 分开。新解码器会使旧重核检查点失效，点击重核即可重查。
+
+ABI 与 UID 布局来源：[已验证 Settlement 源码](https://base.blockscout.com/address/0x25ed72c3f671b626810a6db597dcfd50f215a423?tab=contract)。BSC 当前运行代码与 Base 已验证代码仅有 tokenApproveProxy、chain ID 与域分隔符的 immutable 值差异；未向其他链泛化合约信任。测试使用合成地址，不包含私人账目。

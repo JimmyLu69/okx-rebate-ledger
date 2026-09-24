@@ -1,4 +1,4 @@
-import { EVM, FEE_TOPICS, canonical, decodeFeeLogs } from './ledger.mjs';
+import {settlementFeeAsset, EVM, FEE_TOPICS, canonical, decodeFeeLogs } from './ledger.mjs';
 import { request } from './api.mjs';
 
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -214,6 +214,7 @@ export async function inspectExtended(chain, hash, key, routers, signal, nativeL
       if (asset !== '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') assets.add(asset);
     }
   }
+  for(const l of receipt.logs||[]){const asset=settlementFeeAsset(l);if(asset&&asset!=='0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')assets.add(asset)}
   const metadata = {};
   for (const asset of assets) {
     const d = await rpc(url, 'eth_call', [{ to: asset, data: '0x313ce567' }, receipt.blockNumber], signal);

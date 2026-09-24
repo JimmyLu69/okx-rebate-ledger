@@ -1,4 +1,4 @@
-const CACHE='rebate-shell-v7';
+const CACHE='rebate-shell-v8';
 const FILES=['./','./index.html','./style.css','./theme.js','./serif.ttf','./mono.ttf','./app.mjs','./recheck.mjs','./recheck-worker.mjs','./api.mjs','./ledger.mjs','./allowlist.mjs','./asset-allowlist.json','./history.mjs','./storage.mjs','./install.mjs','./valuation.mjs','./prices.mjs','./extended-api.mjs','./xlayer-api.mjs','./chains.json','./routers.json','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('rebate-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
