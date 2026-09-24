@@ -11,3 +11,14 @@ export function formatAllowlist(rows){return rows.map(r=>r.chain+' '+r.asset).jo
 export function configureAssetAllowlist(rows){allowed=rows===null?null:new Set(normalizeAllowlist(rows).map(r=>r.chain+':'+r.asset))}
 export function allowlistEnabled(){return allowed!==null}
 export function assetAllowed(chain,asset){return asset==='native'||allowed===null||allowed.has(chain+':'+(chain==='solana'?asset:asset?.toLowerCase()))}
+
+// Only newly introduced defaults are merged; explicit removals stay removed.
+export function upgradeAllowlist(saved,defaults){
+ const current=normalizeAllowlist(defaults);
+ if(saved===null)return {assets:current,knownDefaults:current};
+ const legacy=Array.isArray(saved);
+ const assets=normalizeAllowlist(legacy?saved:saved.assets);
+ const known=normalizeAllowlist(legacy?defaults.filter(r=>(r.introduced||1)<=1):saved.knownDefaults);
+ const keys=new Set(known.map(r=>r.chain+':'+r.asset));
+ return {assets:normalizeAllowlist([...assets,...current.filter(r=>!keys.has(r.chain+':'+r.asset))]),knownDefaults:current};
+}

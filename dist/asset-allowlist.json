@@ -136,5 +136,33 @@
     "asset": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
     "label": "USDT",
     "source": "https://tether.to/ru/supported-protocols/"
+  },
+  {
+    "chain": "8453",
+    "asset": "0x4200000000000000000000000000000000000006",
+    "label": "WETH",
+    "source": "https://docs.base.org/specifications/reference/base-contracts",
+    "introduced": 2
+  },
+  {
+    "chain": "8453",
+    "asset": "0x1bc0c42215582d5a085795f4badbac3ff36d1bcb",
+    "label": "CLANKER",
+    "source": "https://clanker.world/clanker/0x1bc0c42215582d5A085795f4baDbaC3ff36d1Bcb",
+    "introduced": 2
+  },
+  {
+    "chain": "8453",
+    "asset": "0x1111111111166b7fe7bd91427724b487980afc69",
+    "label": "ZORA",
+    "source": "https://support.zora.co/en/articles/5654721",
+    "introduced": 2
+  },
+  {
+    "chain": "solana",
+    "asset": "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+    "label": "USD1",
+    "source": "https://por.worldlibertyfinancial.com/",
+    "introduced": 2
   }
 ]
