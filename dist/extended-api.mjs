@@ -85,7 +85,7 @@ export function transferRow(chain, tx, suffix, from, to, raw, asset = 'native', 
   from = lower(from); to = lower(to); raw = BigInt(raw || '0').toString();
   if (from === to || from !== EVM && to !== EVM || raw === '0') return null;
   return { id: `${chain.id}:${tx.hash}:${suffix}`, chain: chain.id, asset, symbol: meta.symbol || asset, decimals: Number(meta.decimals), raw, hash: tx.hash,
-    from, to, trader: from === EVM ? to : lower(tx.from?.hash || tx.from), direction: from === EVM ? 'out' : 'in', kind: 'pending', time: tx.timestamp || '',
+    txSender: lower(tx.from?.hash || tx.from), from, to, trader: from === EVM ? to : lower(tx.from?.hash || tx.from), direction: from === EVM ? 'out' : 'in', kind: 'pending', time: tx.timestamp || '',
     evidence: from === EVM ? '成功交易转出；请确认是否为手动返还' : '成功交易转入；需核对返佣与被邀请人归属' };
 }
 export function nativeFromCallTree(tree, chain, tx) {
