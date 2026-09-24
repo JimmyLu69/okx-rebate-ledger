@@ -1,3 +1,4 @@
+import {RECHECK_REVISION,recheckFingerprint} from './recheck.mjs';
 import {incrementalStreams,historyBackup,restoreHistory} from './history.mjs';
 import {readHistory,writeHistory} from './storage.mjs';
 import {EVM,SOL,configureWallets,format,canonical,validAddress,mergeRecords,summarize,byAddress,autoAccount,pendingReview,spamRecords} from './ledger.mjs';
@@ -68,24 +69,40 @@ function showRecords(ids){activeDetail=ids;const records=autoAccount(state.recor
 async function recheckPending(){
  if(busy)return;
  const candidates=pendingReview(state.records).filter(matches).filter(r=>r.chain!=='solana'&&!r.reviewed);
- const targets=[...new Map(candidates.map(r=>[r.chain+':'+r.hash,{chain:r.chain,hash:r.hash}])).values()];
+ const byTx=new Map();for(const r of state.records){if(r.feeEvent)continue;const key=r.chain+':'+r.hash;if(!byTx.has(key))byTx.set(key,[]);byTx.get(key).push(r)}
+ const targets=[...new Map(candidates.map(r=>[r.chain+':'+r.hash,{chain:r.chain,hash:r.hash}])).entries()];
  if(!targets.length)return toast('当前筛选下没有可重核的 EVM 交易');
- busy=true;controller=new AbortController;let checked=0,failed=0,skipped=0;
- try{for(const {chain,hash} of targets){
-  if(controller.signal.aborted)break;
-  const c=chainBy(chain),key=keys[c.provider||'blockscout'];
-  if(!key){skipped++;continue;}
-  progress=`${c.name} · 重核待核对 ${checked+failed+skipped+1}/${targets.length}`;render();
-  const cov=state.coverage[chain]||={streams:{},inspected:[]};cov.inspected||=[];cov.inspectionErrors||={};
-  try{
-   const rows=state.records.filter(r=>r.chain===chain&&r.hash===hash&&!r.feeEvent);
-   const result=c.provider?await inspectorFor(c)(c,hash,key,routers,controller.signal):await inspectEVM(c,hash,key,routers,rows,controller.signal);
-   state.records=mergeRecords(state.records,Array.isArray(result)?result:[...result.replace,...result.fees]);
-   for(const r of state.records)if(r.chain===chain&&r.hash===hash)delete r.inspectionError;
-   cov.inspected=[...new Set([...cov.inspected,hash])];delete cov.inspectionErrors[hash];checked++;
-  }catch(e){if(controller.signal.aborted)break;failed++;cov.inspectionErrors[hash]=e.message;cov.inspected=cov.inspected.filter(h=>h!==hash);for(const r of state.records)if(r.chain===chain&&r.hash===hash)r.inspectionError=e.message;}
-  state.updated=new Date().toISOString();await save();render();
- }}catch(e){toast(e.message)}finally{busy=false;progress='';render();refreshPrices();toast(`重核完成：${checked} 笔，失败 ${failed} 笔${skipped?'，缺少凭证 '+skipped+' 笔':''}${controller.signal.aborted?'（已暂停）':''}`)}
+ state.recheckCache||={};let reused=0,skipped=0;
+ const jobs=[];for(const [key,t]of targets){const chain=chainBy(t.chain),rows=byTx.get(key)||[],fingerprint=recheckFingerprint(rows),cached=state.recheckCache[key];
+  if(cached?.revision===RECHECK_REVISION&&cached.fingerprint===fingerprint){reused++;continue}
+  if(!keys[chain.provider||'blockscout']){skipped++;continue}
+  jobs.push({key,chain,hash:t.hash,rows,fingerprint});
+ }
+ if(!jobs.length)return toast(`无需重复查询：已核验 ${reused} 笔${skipped?'，缺少凭证 '+skipped+' 笔':''}`);
+ let worker;try{worker=new Worker(new URL('./recheck-worker.mjs',import.meta.url),{type:'module'})}catch{return toast('无法启动核验线程，请刷新后重试')}
+ busy=true;controller=new AbortController;let checked=0,failed=0,buffer=[],lastFlush=Date.now(),flushQueue=Promise.resolve(),fatal='',finished=false;
+ const started=Date.now();
+ const updateProgress=()=>{const seconds=Math.max(1,(Date.now()-started)/1000);progress=`重核 ${checked+failed}/${jobs.length} · ${((checked+failed)*60/seconds).toFixed(1)} 笔/分钟 · 失败 ${failed}${reused?' · 已跳过 '+reused+' 笔':''}${document.hidden?' · 后台运行，系统休眠可能暂停':''}`;};
+ const flush=()=>{const batch=buffer.splice(0);if(!batch.length)return flushQueue;lastFlush=Date.now();
+  const replacements=[];for(const r of batch){const cov=state.coverage[r.chain]||={streams:{},inspected:[]};cov.inspected||=[];cov.inspectionErrors||={};
+   if(r.error){cov.inspectionErrors[r.hash]=r.error;cov.inspected=cov.inspected.filter(h=>h!==r.hash);for(const row of byTx.get(r.key)||[])replacements.push({...row,inspectionError:r.error})}
+   else{replacements.push(...r.rows.map(row=>{const clean={...row};delete clean.inspectionError;return clean}));if(!cov.inspected.includes(r.hash))cov.inspected.push(r.hash);delete cov.inspectionErrors[r.hash];state.recheckCache[r.key]={revision:RECHECK_REVISION,fingerprint:r.fingerprint};}
+  }
+  state.records=mergeRecords(state.records,replacements);state.updated=new Date().toISOString();
+  flushQueue=flushQueue.then(()=>save());flushQueue.catch(()=>{});updateProgress();if(!document.hidden)render();return flushQueue;
+ };
+ const visibility=()=>{flush();updateProgress();if(!document.hidden)render()};
+ const cancel=()=>worker.postMessage({type:'cancel'});
+ controller.signal.addEventListener('abort',cancel,{once:true});document.addEventListener('visibilitychange',visibility);
+ updateProgress();render();
+ try{await new Promise((resolve,reject)=>{
+  worker.onmessage=({data})=>{if(data.type==='result'){if(data.error)failed++;else checked++;buffer.push(data);if(buffer.length>=10||Date.now()-lastFlush>=3000)flush().catch(reject)}else if(data.type==='done'){finished=true;resolve()}else if(data.type==='fatal')reject(Error(data.error))};
+  worker.onerror=e=>reject(Error(e.message||'核验线程异常退出'));
+  worker.postMessage({type:'start',jobs,keys,routers,wallets:{evm:EVM,sol:SOL}});
+ });await flush();await flushQueue;}catch(e){fatal=e.message;try{await flush()}catch{}}finally{
+  worker.terminate();document.removeEventListener('visibilitychange',visibility);controller.signal.removeEventListener('abort',cancel);
+  busy=false;progress='';render();refreshPrices();toast(fatal?'重核中断：'+fatal:`${controller.signal.aborted||!finished?'已暂停':'重核完成'}：${checked} 笔，失败 ${failed} 笔${skipped?'，缺少凭证 '+skipped+' 笔':''}；已保存进度`);
+ }
 }
 $('recheckPending').onclick=()=>recheckPending();
 async function sync(onlyId,retryOnly=false){if(busy){controller.abort();return}const selected=state.selected.filter(id=>(!onlyId||id===onlyId)&&(!retryOnly||!complete(id))&&!chainBy(id).unsupported&&(id==='solana'?SOL&&keys.helius:EVM&&keys[chainBy(id).provider||'blockscout'])).sort((a,b)=>Number(['56','196'].includes(a))-Number(['56','196'].includes(b)));if(!selected.length){settings();return toast('填写对应 API Key 后点击“应用设置”，再同步历史')}busy=true;controller=new AbortController;render();let errors=0;const lanes=Object.groupBy(selected,id=>id==='solana'?'helius':chainBy(id).provider||'blockscout:'+id);try{await Promise.all(Object.values(lanes).map(async ids=>{for(const id of ids){if(controller.signal.aborted)break;const c=chainBy(id);let cov=state.coverage[id]||{streams:{},inspected:[]};if(cov.status==='complete')cov={...cov,streams:incrementalStreams(cov.streams,state.records.filter(r=>r.chain===id))};cov.inspected||=[];cov.inspectionErrors||={};cov.status='running';cov.error='';state.coverage[id]=cov;const onPage=async(rows,p)=>{const known=new Set(state.records.map(r=>r.id)),newRows=rows.filter(r=>!known.has(r.id));if(!c.provider&&newRows.length){const changed=new Set(newRows.map(r=>r.hash));cov.inspected=cov.inspected.filter(h=>!changed.has(h))}state.records=mergeRecords(state.records,newRows);if(c.provider){for(const hash of [...new Set(rows.map(r=>r.hash))]){if(cov.inspected.includes(hash))continue;progress=`${c.name} · 核验新获取的交易与返佣`;render();try{const checked=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,checked);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}cov.streams[p.stream]=p;state.updated=new Date().toISOString();await save();render()};const onProgress=s=>{progress=s;render()};try{if(id==='solana'){await scanSolana(keys.helius,onPage,onProgress,controller.signal,cov.streams.solana||{})}else if(c.provider){for(const hash of Object.keys(cov.inspectionErrors)){if(controller.signal.aborted)throw Error('已暂停');onProgress(`${c.name} · 重试此前未能核验的交易`);try{const rows=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,rows);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}const scanner={nodereal:scanBSC,etherscan:scanLinea,xlayer:scanXLayer}[c.provider];await scanner(c,keys[c.provider],onPage,onProgress,controller.signal,cov.streams);const hashes=[...new Set(state.records.filter(r=>r.chain===id&&r.stream==='discovery').map(r=>r.hash))];for(let i=0;i<hashes.length;i++){const hash=hashes[i];if(cov.inspected.includes(hash))continue;onProgress(`${c.name} · 核验成功回执与内部转账 ${i+1}/${hashes.length}`);try{const rows=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,rows);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}else{await scanEVM(c,keys.blockscout,routers,onPage,onProgress,controller.signal,cov.streams);const records=state.records.filter(r=>r.chain===id&&r.stream),hashes=[...new Set(records.map(r=>r.hash))];for(let i=0;i<hashes.length;i++){const hash=hashes[i];if(cov.inspected.includes(hash))continue;onProgress(`${c.name} · 核验交易与返佣事件 ${i+1}/${hashes.length}`);try{const result=await inspectEVM(c,hash,keys.blockscout,routers,records.filter(r=>r.hash===hash),controller.signal);state.records=mergeRecords(state.records,[...result.replace,...result.fees]);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}if(Object.keys(cov.inspectionErrors).length)throw Error(`${Object.keys(cov.inspectionErrors).length} 笔交易尚未核验：${Object.values(cov.inspectionErrors)[0]}`);cov.status='complete';cov.updated=new Date().toISOString()}catch(e){cov.status='error';cov.error=controller.signal.aborted?'已暂停；下次从保存的进度继续':e.message;errors++}save();render()}}))}finally{busy=false;progress='';save();render();toast(controller.signal.aborted?'同步已暂停，进度已保存':errors?`${errors} 条链未完成，可查看“数据覆盖”后重试`:'所选网络扫描完成，账目已自动汇总')}}
