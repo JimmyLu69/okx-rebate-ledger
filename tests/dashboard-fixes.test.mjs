@@ -27,5 +27,19 @@ test('automatic accounting recognizes proven fees and OKX Solana, offsets paymen
  const records=[{...seed,id:'event',kind:'pending',feeEvent:true},{...seed,id:'underlying',kind:'ignore',supersededBy:['event']},{...seed,id:'paid',from:seed.to,to:seed.trader,direction:'out',kind:'pending',raw:'5000000000000'},sol,{...sol,id:'solpaid',from:SOL,to:solTrader,direction:'out',raw:'40'},{...sol,id:'randomdeposit',source:'UNKNOWN',raw:'9999'},{...sol,id:'vaultpayment',from:'11111111111111111111111111111111',raw:'9999'},{...seed,id:'unrelatedout',from:seed.to,to:'0x'+'9'.repeat(40),direction:'out',kind:'pending'}];
  const accounted=autoAccount(records),groups=summarize(accounted);
  assert.equal(groups.find(g=>g.chain==='4663').remaining,'10000000000000');assert.equal(groups.find(g=>g.chain==='solana').remaining,'60');
- assert.equal(accounted.filter(r=>r.autoExcluded).length,3);assert.equal(records[0].kind,'pending');assert.equal(accounted.find(r=>r.id==='underlying').kind,'ignore');
+ assert.equal(accounted.filter(r=>r.needsReview&&r.kind==='pending').length,3);assert.equal(records[0].kind,'pending');assert.equal(accounted.find(r=>r.id==='underlying').kind,'ignore');
+});
+test('unmatched history stays pending, legacy automatic exclusion is restored, explicit decisions are preserved',async()=>{
+ const {autoAccount,pendingReview}=await import('../dist/ledger.mjs');
+ const incoming={...seed,id:'unmatched-in',kind:'pending',feeEvent:false,raw:'123'};
+ const outgoing={...seed,id:'unmatched-out',kind:'pending',direction:'out',from:seed.to,to:'0x'+'9'.repeat(40),raw:'456'};
+ const legacy={...incoming,id:'legacy-auto',kind:'ignore',autoExcluded:true};
+ const explicit={...incoming,id:'explicit-ignore',kind:'ignore',reviewed:true};
+ const duplicate={...incoming,id:'replaced',kind:'ignore',supersededBy:[seed.id]};
+ const index={...incoming,id:'index',raw:'0',kind:'ignore',stream:'discovery'};
+ const input=[incoming,outgoing,legacy,explicit,duplicate,index];
+ const pending=pendingReview(input);assert.deepEqual(pending.map(r=>r.id),['unmatched-in','unmatched-out','legacy-auto']);
+ assert.equal(pending[1].raw,'456');assert.ok(pending.every(r=>r.reviewReason));assert.equal(summarize(autoAccount(input)).length,0);
+ assert.equal(legacy.kind,'ignore');assert.equal(autoAccount(input).find(r=>r.id==='explicit-ignore').kind,'ignore');
+ const matched=autoAccount([...input, {...seed,trader:outgoing.to}]);assert.equal(matched.find(r=>r.id===outgoing.id).kind,'refund');
 });

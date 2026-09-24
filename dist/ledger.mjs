@@ -22,7 +22,7 @@ export function byAddress(groups){
 // Automatic accounting requested by the owner. Preserve raw history and any
 // previous explicit decisions; never treat an arbitrary deposit as a referral.
 export function autoAccount(records){
- const rows=records.map(r=>({...r}));const receiptIds=new Set(records.flatMap(r=>r.supersededBy||[]));
+ const rows=records.map(r=>{const copy={...r};if(copy.autoExcluded&&!copy.reviewed&&!copy.supersededBy){copy.kind='pending';delete copy.autoExcluded}return copy});const receiptIds=new Set(records.flatMap(r=>r.supersededBy||[]));
  for(const r of rows){
   if(r.supersededBy||r.reviewed||r.kind!=='pending')continue;
   const own=r.chain==='solana'?SOL:EVM;
@@ -35,9 +35,11 @@ export function autoAccount(records){
   const own=r.chain==='solana'?SOL:EVM, recipient=canonical(r.chain,r.to);
   if(r.direction==='out'&&canonical(r.chain,r.from)===own&&invitees.has((r.chain==='solana'?'sol:':'evm:')+recipient)){
    r.kind='refund';r.trader=recipient;r.automatic=true;r.evidence='自动抵扣：本钱包向已识别被邀请地址的同币种转出（Gas 不计入）';
-  }else{r.kind='ignore';r.autoExcluded=true;r.exclusionReason=r.direction==='out'?'收款地址尚未匹配到返佣交易':'未识别到可归属的返佣凭证';}
+  }else{r.kind='pending';r.needsReview=true;r.reviewReason=r.direction==='out'?'收款地址尚未匹配到返佣交易':'未识别到可归属的返佣凭证';}
  }
  return rows;
 }
 
 export function configureWallets(evm,sol){if(evm&&!validAddress('1',evm)||sol&&!validAddress('solana',sol))throw Error('钱包地址格式错误');EVM=(evm||'').toLowerCase();SOL=sol||''}
+
+export function pendingReview(records){return autoAccount(records).filter(r=>r.kind==='pending'&&!r.supersededBy&&BigInt(r.raw)>0n)}
