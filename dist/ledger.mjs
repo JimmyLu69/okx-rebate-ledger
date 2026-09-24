@@ -1,3 +1,4 @@
+import {assetAllowed,allowlistEnabled} from './allowlist.mjs';
 export let EVM='';
 export let SOL='';
 export const LEGACY_FEE_TOPICS=['0x0d3b1268ca3dbb6d3d8a0ea35f44f8f9d58cf578d732680b71b6904fb2733e0d','0xf171268de859ec269c52bbfac94dcb7715e784de194342abb284bf34fd30b32d'];
@@ -29,11 +30,11 @@ export const REPORTED_SPAM_ASSETS=new Set([
  'solana:AWs2J3buZeyvvSE5pyoFVJQUNKa36g8sbouskt6W9fre'
 ]);
 export function autoAccount(records){
- const rows=records.map(r=>{const copy={...r};delete copy.spam;delete copy.spamReason;if(copy.automatic&&!copy.reviewed){copy.kind='pending';delete copy.automatic}if(copy.autoExcluded&&!copy.reviewed&&!copy.supersededBy){copy.kind='pending';delete copy.autoExcluded}return copy});const receiptIds=new Set(records.flatMap(r=>r.supersededBy||[]));
+ const rows=records.map(r=>{const copy={...r};delete copy.spam;delete copy.spamReason;if(copy.whitelistKind){copy.kind=copy.whitelistKind;delete copy.whitelistKind}if(copy.automatic&&!copy.reviewed){copy.kind='pending';delete copy.automatic}if(copy.autoExcluded&&!copy.reviewed&&!copy.supersededBy){copy.kind='pending';delete copy.autoExcluded}if(!assetAllowed(copy.chain,copy.asset)){copy.whitelistKind=copy.kind;copy.kind='pending';copy.spam=true;copy.spamReason='合约 / Mint 不在当前网络白名单';copy.needsReview=true}return copy});const receiptIds=new Set(records.flatMap(r=>r.supersededBy||[]));
  for(const r of rows){
-  if(r.supersededBy||r.reviewed||r.kind!=='pending')continue;
+  if(r.spam||r.supersededBy||r.reviewed||r.kind!=='pending')continue;
   const own=r.chain==='solana'?SOL:EVM;
-  if(!r.spamDismissed&&REPORTED_SPAM_ASSETS.has(r.chain+':'+canonical(r.chain,r.asset)))continue;
+  if(!allowlistEnabled()&&!r.spamDismissed&&REPORTED_SPAM_ASSETS.has(r.chain+':'+canonical(r.chain,r.asset)))continue;
   if(r.direction==='in'&&r.feeEvent&&(r.receiptMatched||receiptIds.has(r.id))&&r.trader&&r.trader!==own){r.kind='commission';r.evidence='自动归属：成功交易的返佣事件与实际到账金额一致，归属交易发起地址';r.automatic=true}
   else if(r.chain==='solana'&&r.direction==='in'&&r.source==='OKX_DEX_ROUTER'&&validAddress('solana',r.suggestedTrader||'')&&r.suggestedTrader!==SOL&&r.from===r.suggestedTrader){r.kind='commission';r.trader=r.suggestedTrader;r.evidence='自动归属：OKX 路由交易中，被邀请地址支付给本钱包的实际转账';r.automatic=true}
  }
@@ -43,10 +44,10 @@ export function autoAccount(records){
  const knownAssets=new Set(commissions.map(assetKey));
  const invitees=[...new Set(commissions.filter(r=>r.chain!=='solana').map(r=>canonical(r.chain,r.trader)))];
  for(const r of rows){
-  if(r.supersededBy||r.reviewed||r.kind!=='pending')continue;
+  if(r.spam||r.supersededBy||r.reviewed||r.kind!=='pending')continue;
   const own=r.chain==='solana'?SOL:EVM, recipient=canonical(r.chain,r.to);
   const lookalike=r.chain!=='solana'&&invitees.some(a=>a!==recipient&&a.slice(0,6)===recipient.slice(0,6)&&a.slice(-4)===recipient.slice(-4));
-  if(!r.spamDismissed&&r.asset!=='native'&&(REPORTED_SPAM_ASSETS.has(assetKey(r))||r.sourceSpam||(!knownAssets.has(assetKey(r))&&r.direction==='out'&&lookalike))){
+  if(!allowlistEnabled()&&!r.spamDismissed&&r.asset!=='native'&&(REPORTED_SPAM_ASSETS.has(assetKey(r))||r.sourceSpam||(!knownAssets.has(assetKey(r))&&r.direction==='out'&&lookalike))){
    r.spam=true;r.spamReason=REPORTED_SPAM_ASSETS.has(assetKey(r))?'案例报告标记为疑似钓鱼资产（按网络与完整合约 / Mint 匹配）':r.sourceSpam?'数据源标记为可疑代币 / 垃圾记录':'合约未匹配返佣资产，且收款地址仿似已知被邀请地址';r.needsReview=true;continue;
   }
   if(r.direction==='out'&&canonical(r.chain,r.from)===own&&relationships.has(assetKey(r)+':'+recipient)&&(r.chain==='solana'||canonical(r.chain,r.txSender)===own)){

@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-const files = ['index.html', 'style.css', 'app.mjs','recheck.mjs','recheck-worker.mjs', 'api.mjs', 'ledger.mjs', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
+const files = ['index.html', 'style.css', 'app.mjs','recheck.mjs','recheck-worker.mjs', 'api.mjs', 'ledger.mjs','allowlist.mjs','asset-allowlist.json', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
 const assets = {};
 for (const file of files) assets['/' + file] = await readFile(new URL('../dist/' + file, import.meta.url), /\.(png|ttf)$/.test(file)?'base64':'utf8');
 const core = await readFile(new URL('../dist/prices.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/prices-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/xlayer-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/blockscout-proxy.mjs', import.meta.url), 'utf8');

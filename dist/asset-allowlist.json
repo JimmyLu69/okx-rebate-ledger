@@ -1,0 +1,140 @@
+[
+  {
+    "chain": "42161",
+    "asset": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "5042",
+    "asset": "0x3600000000000000000000000000000000000000",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "8453",
+    "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "1",
+    "asset": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "label": "USDC",
+    "source": "https://github.com/Uniswap/default-token-list"
+  },
+  {
+    "chain": "57073",
+    "asset": "0x2d270e6886d130d724215a266106e6832161eaed",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "59144",
+    "asset": "0x176211869ca2b568f2a7d4ee941e073a821ee1ff",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "10",
+    "asset": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "137",
+    "asset": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "solana",
+    "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "196",
+    "asset": "0xb6ceceab302e2e4948951ee7843fc24e92933061",
+    "label": "USDC",
+    "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+  },
+  {
+    "chain": "1",
+    "asset": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "label": "WETH",
+    "source": "https://github.com/Uniswap/default-token-list"
+  },
+  {
+    "chain": "1",
+    "asset": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "label": "DAI",
+    "source": "https://github.com/Uniswap/default-token-list"
+  },
+  {
+    "chain": "1",
+    "asset": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "label": "USDT",
+    "source": "https://github.com/Uniswap/default-token-list"
+  },
+  {
+    "chain": "1",
+    "asset": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "label": "WBTC",
+    "source": "https://github.com/Uniswap/default-token-list"
+  },
+  {
+    "chain": "56",
+    "asset": "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",
+    "label": "DAI",
+    "source": "https://tokens.pancakeswap.finance/pancakeswap-extended.json"
+  },
+  {
+    "chain": "56",
+    "asset": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+    "label": "USDC",
+    "source": "https://tokens.pancakeswap.finance/pancakeswap-extended.json"
+  },
+  {
+    "chain": "56",
+    "asset": "0x55d398326f99059ff775485246999027b3197955",
+    "label": "USDT",
+    "source": "https://tokens.pancakeswap.finance/pancakeswap-extended.json"
+  },
+  {
+    "chain": "56",
+    "asset": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+    "label": "WBNB",
+    "source": "https://tokens.pancakeswap.finance/pancakeswap-extended.json"
+  },
+  {
+    "chain": "56",
+    "asset": "0x0555e30da8f98308edb960aa94c0db47230d2b9c",
+    "label": "WBTC",
+    "source": "https://tokens.pancakeswap.finance/pancakeswap-extended.json"
+  },
+  {
+    "chain": "4663",
+    "asset": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+    "label": "USDG",
+    "source": "https://robinhoodchain.blockscout.com/token/0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+  },
+  {
+    "chain": "8453",
+    "asset": "0x006a8a2b11b44a402428492fd5b9b5a483090614",
+    "label": "USDbC",
+    "source": "https://base.blockscout.com/token/0x006a8a2b11b44a402428492fd5b9b5a483090614"
+  },
+  {
+    "chain": "solana",
+    "asset": "So11111111111111111111111111111111111111112",
+    "label": "WSOL",
+    "source": "https://solana.com/docs/tokens/basics/sync-native"
+  },
+  {
+    "chain": "solana",
+    "asset": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    "label": "USDT",
+    "source": "https://tether.to/ru/supported-protocols/"
+  }
+]
