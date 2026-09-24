@@ -19,7 +19,7 @@ export async function scanXLayer(chain, credentials, onPage, onProgress, signal,
   const endBlock = Object.values(start).find(p => p.endBlock != null)?.endBlock ?? Number(block.number);
   if (!Number.isSafeInteger(endBlock) || endBlock < 0) throw Error('X Layer 区块高度无效');
   for (const stream of ['internal-transaction-list', 'token-transaction-list']) {
-    await scanRanges({ chain, streams: [stream], windowSize: endBlock + 1, endBlock, start: {[stream]:start[stream]?.complete||start[stream]?.fullRange?start[stream]:{}}, reverse: true, onPage:(rows,p)=>onPage(rows,{...p,fullRange:true}), onProgress, signal,
+    await scanRanges({ chain, streams: [stream], windowSize: endBlock + 1, endBlock, start: {[stream]:start[stream]?.complete||start[stream]?.fullRange||start[stream]?.minBlock!=null?start[stream]:{}}, reverse: true, onPage:(rows,p)=>onPage(rows,{...p,fullRange:true}), onProgress, signal,
       fetchPage: async (s, from, to, page) => {
         const data = await xquery(credentials, 'address/' + s, { address: EVM, startBlockHeight: from, endBlockHeight: to, page, limit: 50, ...(s === 'token-transaction-list' ? { protocolType: 'token_20' } : {}) }, signal);
         if (!Array.isArray(data.transactionList) || data.transactionList.some(x => Number(x.height) < from || Number(x.height) > to)) throw Error('X Layer 返回了区间外或不完整记录');
@@ -75,7 +75,7 @@ export async function inspectXLayer(chain, hash, credentials, routers, signal) {
 // Referral native payouts are internal transfers, and token payouts are logs.
 // Find ALL ordinary outgoing transactions (refunds) by monotonic account nonce,
 // rather than scanning millions of empty blocks or trusting a one-year index.
-export async function nonceRanges(endBlock,getNonce,maxWindow=10000){
+export async function nonceRanges(endBlock,getNonce,maxWindow=10000,startBlock=0){
  const total=Number(await getNonce(endBlock));
  if(!Number.isSafeInteger(total)||total<0)throw Error('X Layer nonce 无效');
  const ranges=[];
@@ -86,12 +86,12 @@ export async function nonceRanges(endBlock,getNonce,maxWindow=10000){
   if(!Number.isSafeInteger(n)||n<before||n>after)throw Error('历史 nonce 不一致，无法验证普通转出完整性');
   await visit(lo,mid,before,n);await visit(mid,hi,n,after);
  }
- await visit(-1,endBlock,0,total);return {total,ranges};
+ const baseline=startBlock>0?Number(await getNonce(startBlock-1)):0;await visit(startBlock-1,endBlock,baseline,total);return {total:total-baseline,baseline,ranges};
 }
 export async function scanXLayerOutgoing(chain,credentials,endBlock,onPage,onProgress,signal,saved={}){
  if(saved?.complete)return;
  onProgress('X Layer · 定位全部手动转出历史');
- const {total,ranges}=await nonceRanges(endBlock,async height=>{if(signal?.aborted)throw Error('已暂停');return rpc('https://rpc.xlayer.tech','eth_getTransactionCount',[EVM,'0x'+height.toString(16)],signal)});
+ const {total,baseline,ranges}=await nonceRanges(endBlock,async height=>{if(signal?.aborted)throw Error('已暂停');return rpc('https://rpc.xlayer.tech','eth_getTransactionCount',[EVM,'0x'+height.toString(16)],signal)},10000,saved?.minBlock||0);
  const nonces=new Set();
  for(const range of ranges){
   let page=1,pages=1;const seen=new Set();
@@ -101,10 +101,10 @@ export async function scanXLayerOutgoing(chain,credentials,endBlock,onPage,onPro
    if(!Array.isArray(data.transactionList))throw Error('X Layer 普通转出列表缺失');
    const fp=JSON.stringify(data.transactionList);if(data.transactionList.length&&seen.has(fp))throw Error('X Layer 普通转出分页重复');seen.add(fp);
    for(const t of data.transactionList){if(String(t.from).toLowerCase()!==EVM||Number(t.height)<range.from||Number(t.height)>range.to||!Number.isInteger(Number(t.nonce)))throw Error('X Layer 普通转出区间或归属不一致');nonces.add(Number(t.nonce));}
-   await onPage(discovery(chain,data.transactionList.map(t=>t.txId)),{stream:'normal-outgoing',complete:false});
+   await onPage(discovery(chain,data.transactionList.map(t=>t.txId)),{stream:'normal-outgoing',complete:false,minBlock:saved?.minBlock||0,endBlock});
    pages=Number(data.totalPage);page++;
   }while(page<=pages);
  }
- if(nonces.size!==total||[...nonces].some(n=>n<0||n>=total))throw Error(`X Layer 普通转出仍缺记录：${nonces.size}/${total}`);
+ if(nonces.size!==total||[...nonces].some(n=>n<baseline||n>=baseline+total))throw Error(`X Layer 普通转出仍缺记录：${nonces.size}/${total}`);
  await onPage([],{stream:'normal-outgoing',complete:true,count:total,endBlock});
 }

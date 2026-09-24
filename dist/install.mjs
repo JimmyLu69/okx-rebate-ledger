@@ -1,0 +1,10 @@
+let prompt;
+const button=document.getElementById('installApp');
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();prompt=e});
+window.addEventListener('appinstalled',()=>{button.hidden=true;prompt=null});
+if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)button.hidden=true;
+button.onclick=async()=>{if(prompt){await prompt.prompt();prompt=null}else document.getElementById('installHelp').showModal()};
+if('serviceWorker' in navigator&&isSecureContext)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+window.addEventListener('online',()=>document.getElementById('offlineNote').hidden=true);
+window.addEventListener('offline',()=>document.getElementById('offlineNote').hidden=false);
+document.getElementById('offlineNote').hidden=navigator.onLine;

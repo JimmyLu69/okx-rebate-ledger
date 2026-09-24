@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-const files = ['index.html', 'style.css', 'app.mjs', 'api.mjs', 'ledger.mjs', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json'];
+const files = ['index.html', 'style.css', 'app.mjs', 'api.mjs', 'ledger.mjs', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
 const assets = {};
-for (const file of files) assets['/' + file] = await readFile(new URL('../dist/' + file, import.meta.url), 'utf8');
+for (const file of files) assets['/' + file] = await readFile(new URL('../dist/' + file, import.meta.url), file.endsWith('.png')?'base64':'utf8');
 const core = await readFile(new URL('../dist/prices.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/prices-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/xlayer-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/blockscout-proxy.mjs', import.meta.url), 'utf8');
 await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true });
 await writeFile(new URL('../dist/server/index.js', import.meta.url), core.replace("import {lookupPrices} from '../dist/prices.mjs';",'') + '\nconst assets = ' + JSON.stringify(assets) + `;
@@ -13,7 +13,7 @@ export default { async fetch(request) {
   if (!['GET','HEAD'].includes(request.method)) return new Response('Method not allowed', {status:405});
   const path = url.pathname === '/' ? '/index.html' : url.pathname;
   if (!Object.hasOwn(assets,path)) return new Response('Not found',{status:404});
-  const type = path.endsWith('.html') ? 'text/html' : path.endsWith('.css') ? 'text/css' : path.endsWith('.json') ? 'application/json' : 'text/javascript';
-  return new Response(request.method === 'HEAD' ? null : assets[path], {headers:{'Content-Type':type+'; charset=utf-8','Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
+  const type = path.endsWith('.png') ? 'image/png' : path.endsWith('.webmanifest') ? 'application/manifest+json' : path.endsWith('.html') ? 'text/html' : path.endsWith('.css') ? 'text/css' : path.endsWith('.json') ? 'application/json' : 'text/javascript';
+  return new Response(request.method === 'HEAD' ? null : path.endsWith('.png') ? Uint8Array.from(atob(assets[path]),c=>c.charCodeAt(0)) : assets[path], {headers:{'Content-Type':type+'; charset=utf-8','Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
 }};
 `);

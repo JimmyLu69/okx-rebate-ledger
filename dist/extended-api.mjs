@@ -35,22 +35,22 @@ export async function scanRanges({ chain, streams, windowSize, endBlock, start =
   for (const stream of streams) {
     const saved = start[stream];
     if (saved?.complete) continue;
-    const target = saved?.endBlock ?? endBlock;
-    let next = saved?.next ?? (reverse ? Math.floor(target / windowSize) * windowSize : 0), page = saved?.page ?? 1, cursor = saved?.cursor ?? null;
-    let fingerprints = new Set();
-    while (next >= 0 && next <= target) {
+    const target = saved?.endBlock ?? endBlock, minBlock=saved?.minBlock??0;
+    let next = saved?.next ?? (reverse ? Math.floor(target / windowSize) * windowSize : minBlock), page = saved?.page ?? 1, cursor = saved?.cursor ?? null;
+    let fingerprints = new Set();if(minBlock>target){await onPage([],{stream,endBlock:target,minBlock,complete:true});continue;}
+    while (next >= 0 && next <= target && next+windowSize-1>=minBlock) {
       if (signal?.aborted) throw Error('已暂停');
       const to = Math.min(next + windowSize - 1, target);
       onProgress(`${chain.name} · ${stream} · 区块 ${next.toLocaleString()}–${to.toLocaleString()} / ${target.toLocaleString()}`);
-      const result = await fetchPage(stream, next, to, page, cursor);
+      const result = await fetchPage(stream, Math.max(minBlock,next), to, page, cursor);
       if (!Array.isArray(result.hashes)) throw Error('历史响应不完整');
       const fingerprint = JSON.stringify([result.hashes, result.cursor]);
       if (result.more && fingerprints.has(fingerprint)) throw Error('分页内容重复，已暂停以免漏记；历史尚未完整');
       fingerprints.add(fingerprint);
       const rows = discovery(chain, result.hashes);
       if (result.more) { page++; cursor = result.cursor || null; }
-      else { next = reverse ? next - windowSize : to + 1; page = 1; cursor = null; fingerprints = new Set(); }
-      await onPage(rows, { stream, next, page, cursor, endBlock: target, complete: next < 0 || next > target });
+      else { next = reverse ? next-windowSize : to + 1; page = 1; cursor = null; fingerprints = new Set(); }
+      await onPage(rows, { stream, next, page, cursor, endBlock: target, minBlock, complete: next < 0 || next+windowSize-1 < minBlock || next > target });
     }
   }
 }
