@@ -93,4 +93,8 @@ Solana OKX SwapV3 按[发布的程序和账户布局](https://github.com/okxlabs
 
 Base 假 USDbC `0x006a8a2b11b44a402428492fd5b9b5a483090614` 已撤销信任，升级同时移除旧设置里的该条目；旧备份不能恢复其信任。官方桥接 USDbC 按 [Uniswap 官方代币列表](https://github.com/Uniswap/default-token-list/blob/main/src/tokens/base.json)的完整地址识别。
 
-Linea RPC 每个节点最多等待 12 秒，主节点故障时切换 PublicNode，并优先复用成功节点；两者均失败时报告方法名及各节点错误。不会将失败解释为空历史，也不将请求改成最新区块查询。
+Linea RPC 经同源 /api/linea 服务端只读转发，服务端每个节点最多等待 9 秒，失败后切换 PublicNode。仅允许获取交易、回执、区块、指定历史区块代码及代币元数据，不支持签名、广播或任意目标 URL。
+
+### 固定稳定币记账与 Base 微额直转
+
+维护名单中的 USDC、USDT、USD1、USDT0 及 USDbC 按固定 1 USD 记账，不请求行情；同名假币不受信任。Arbitrum USDT0 地址来自 https://usdt0.to/ecosystem/arbitrum 。Base 稳定币直接转入低于 0.001 USD，且无已确认返佣凭证时归入疑似垃圾；需核实 calldata 与转账的发送人、接收人、合约及金额完全匹配。原始流水保留，旧记录需重核补入证据。

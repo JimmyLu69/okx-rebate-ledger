@@ -8,18 +8,13 @@ const lower = s => String(s || '').toLowerCase();
 const hashOK = s => /^0x[0-9a-f]{64}$/.test(lower(s));
 const integer = v => { const n = Number(v); if (!Number.isSafeInteger(n) || n < 0) throw Error('数据源区块高度无效'); return n; };
 
-const LINEA_RPCS=['https://rpc.linea.build','https://linea-rpc.publicnode.com'];
-let lineaPreferred=LINEA_RPCS[0];
 export async function rpc(url, method, params, signal) {
- const linea=LINEA_RPCS.includes(url),endpoints=linea?[lineaPreferred,...LINEA_RPCS.filter(u=>u!==lineaPreferred)]:[url],errors=[];
- for(const endpoint of endpoints){
-  try{
-   const r=await request(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})},signal,linea?{attempts:1,timeoutMs:12000}:{});
-   if(!Object.hasOwn(r,'result')||r.result==null)throw Error('节点未返回完整交易数据');
-   if(linea)lineaPreferred=endpoint;return r.result;
-  }catch(e){if(signal?.aborted)throw Error('已暂停');errors.push((linea?new URL(endpoint).hostname+'：':'')+e.message)}
- }
- throw Error(method+'：'+errors.join('；'));
+ const linea=['https://rpc.linea.build','https://linea-rpc.publicnode.com'].includes(url);
+ try{
+  const r=await request(linea?'/api/linea':url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})},signal,linea?{attempts:1,timeoutMs:22000}:{});
+  if(!Object.hasOwn(r,'result')||r.result==null)throw Error('节点未返回完整交易数据');
+  return r.result;
+ }catch(e){throw Error(method+'：'+e.message)}
 }
 export async function etherscan(key, chain, action, params, signal) {
   if (!key) throw Error('请填写 Etherscan API Key');

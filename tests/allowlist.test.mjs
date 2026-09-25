@@ -22,13 +22,13 @@ test('default upgrades preserve additions and removals, including legacy setting
  const old=normalizeAllowlist(defaults.filter(r=>!r.introduced));
  const saved=[...old.slice(1),...allowed];
  const migrated=upgradeAllowlist(saved,defaults);
- assert.equal(migrated.assets.length,saved.length+5);
+ assert.equal(migrated.assets.length,saved.length+6);
  assert(!migrated.assets.some(r=>r.chain===old[0].chain&&r.asset===old[0].asset));
  assert(migrated.assets.some(r=>r.asset===asset));
  assert.deepEqual(upgradeAllowlist(migrated,defaults),migrated);
  const removed={...migrated,assets:migrated.assets.filter(r=>r.asset!==defaults.at(-1).asset)};
  assert.deepEqual(upgradeAllowlist(removed,defaults),removed);
- assert.equal(upgradeAllowlist(null,defaults).assets.length,27);
+ assert.equal(upgradeAllowlist(null,defaults).assets.length,28);
 });
 test('new exact identities recover prior false positives without accepting ticker impostors',()=>{
  const defaults=JSON.parse(fs.readFileSync(new URL('../dist/asset-allowlist.json',import.meta.url)));

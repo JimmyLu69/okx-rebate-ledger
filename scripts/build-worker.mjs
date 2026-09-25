@@ -1,12 +1,13 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-const files = ['index.html', 'style.css', 'app.mjs','recheck.mjs','recheck-worker.mjs', 'api.mjs', 'ledger.mjs','solana-classification.mjs','allowlist.mjs','asset-allowlist.json', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
+const files = ['index.html', 'style.css', 'app.mjs','recheck.mjs','recheck-worker.mjs', 'api.mjs', 'ledger.mjs','solana-classification.mjs','stablecoins.mjs','allowlist.mjs','asset-allowlist.json', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
 const assets = {};
 for (const file of files) assets['/' + file] = await readFile(new URL('../dist/' + file, import.meta.url), /\.(png|ttf)$/.test(file)?'base64':'utf8');
-const core = await readFile(new URL('../dist/prices.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/prices-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/xlayer-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/blockscout-proxy.mjs', import.meta.url), 'utf8');
+const core = await readFile(new URL('../dist/stablecoins.mjs',import.meta.url),'utf8')+'\n'+await readFile(new URL('../server/linea-proxy.mjs',import.meta.url),'utf8')+'\n'+await readFile(new URL('../dist/prices.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/prices-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/xlayer-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/blockscout-proxy.mjs', import.meta.url), 'utf8');
 await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true });
-await writeFile(new URL('../dist/server/index.js', import.meta.url), core.replace("import {lookupPrices} from '../dist/prices.mjs';",'') + '\nconst assets = ' + JSON.stringify(assets) + `;
+await writeFile(new URL('../dist/server/index.js', import.meta.url), core.replace("import {fixedUsdPrice} from './stablecoins.mjs';",'').replace("import {lookupPrices} from '../dist/prices.mjs';",'') + '\nconst assets = ' + JSON.stringify(assets) + `;
 export default { async fetch(request) {
   const url = new URL(request.url);
+  if (url.pathname === '/api/linea') return handleLinea(request);
   if (url.pathname === '/api/prices') return handlePrices(request);
   if (url.pathname === '/api/blockscout') return handleBlockscout(request);
   if (url.pathname === '/api/xlayer') return handleXLayer(request);

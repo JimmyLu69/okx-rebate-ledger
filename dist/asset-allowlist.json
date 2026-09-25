@@ -165,5 +165,12 @@
     "label": "USDbC",
     "source": "https://github.com/Uniswap/default-token-list/blob/main/src/tokens/base.json",
     "introduced": 3
+  },
+  {
+    "chain": "42161",
+    "asset": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "label": "USDT0",
+    "source": "https://usdt0.to/ecosystem/arbitrum",
+    "introduced": 4
   }
 ]
