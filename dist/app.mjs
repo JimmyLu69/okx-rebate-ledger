@@ -1,4 +1,4 @@
-import {upgradeAllowlist,normalizeAllowlist,parseAllowlist,formatAllowlist,configureAssetAllowlist} from './allowlist.mjs';
+import {revokedAsset,upgradeAllowlist,normalizeAllowlist,parseAllowlist,formatAllowlist,configureAssetAllowlist} from './allowlist.mjs';
 import {RECHECK_REVISION,planRecheck,recheckOutcome} from './recheck.mjs';
 import {incrementalStreams,historyBackup,restoreHistory} from './history.mjs';
 import {readHistory,writeHistory} from './storage.mjs';
@@ -24,7 +24,7 @@ try{
  localStorage.setItem('rebate-asset-allowlist-v2',JSON.stringify(policy));
 }catch{storageWarn='白名单读取或保存失败，已使用可用名单'}
 configureAssetAllowlist(assetAllowlist);
-const updateAllowlist=rows=>{const next=normalizeAllowlist(rows);localStorage.setItem('rebate-asset-allowlist-v2',JSON.stringify({assets:next,knownDefaults:normalizeAllowlist(defaultAllowlist)}));assetAllowlist=next;configureAssetAllowlist(next);prices={};};
+const updateAllowlist=rows=>{const next=normalizeAllowlist(rows);if(next.some(r=>revokedAsset(r.chain,r.asset)))throw Error('名单包含已撤销信任的假 USDbC 合约，请移除');localStorage.setItem('rebate-asset-allowlist-v2',JSON.stringify({assets:next,knownDefaults:normalizeAllowlist(defaultAllowlist)}));assetAllowlist=next;configureAssetAllowlist(next);prices={};};
 function validateRecord(r){if(!r||typeof r!=='object'||typeof r.id!=='string'||!r.id||r.id.length>300||!chains.some(c=>c.id===r.chain)||typeof r.hash!=='string'||!(r.chain==='solana'?/^[1-9A-HJ-NP-Za-km-z]{64,100}$/:/^0x[\da-fA-F]{64}$/).test(r.hash)||!['native',r.asset].includes(r.asset)||r.asset!=='native'&&!validAddress(r.chain,r.asset)||!Number.isInteger(r.decimals)||r.decimals<0||r.decimals>36||typeof r.raw!=='string'||!/^\d{1,100}$/.test(r.raw)||typeof r.symbol!=='string'||r.symbol.length>100||!['commission','refund','pending','ignore'].includes(r.kind)||!['in','out'].includes(r.direction)||r.kind==='commission'&&r.direction!=='in'||r.kind==='refund'&&r.direction!=='out'||['commission','refund'].includes(r.kind)&&!validAddress(r.chain,r.trader||''))throw Error('记录格式不正确：请使用看板导出的 JSON，金额必须是最小单位整数字符串');return r}
 try{const saved=JSON.parse(localStorage.getItem('rebate-ledger-v1')||'null');if(saved?.version===1&&Array.isArray(saved.records)){saved.records.forEach(validateRecord);state={...state,...saved,selected:Array.isArray(saved.selected)?[...new Set(saved.selected.filter(id=>chains.some(c=>c.id===id)))]:required,coverage:saved.coverage||{}}}}catch{storageWarn='本机保存的数据无法读取；当前显示已核实示例。请导入备份恢复。'}
 let preferences={enabled:true,threshold:'0.1'},prices={},priceBusy=false;

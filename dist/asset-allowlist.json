@@ -120,12 +120,6 @@
     "source": "https://robinhoodchain.blockscout.com/token/0x5fc5360d0400a0fd4f2af552add042d716f1d168"
   },
   {
-    "chain": "8453",
-    "asset": "0x006a8a2b11b44a402428492fd5b9b5a483090614",
-    "label": "USDbC",
-    "source": "https://base.blockscout.com/token/0x006a8a2b11b44a402428492fd5b9b5a483090614"
-  },
-  {
     "chain": "solana",
     "asset": "So11111111111111111111111111111111111111112",
     "label": "WSOL",
@@ -164,5 +158,12 @@
     "label": "USD1",
     "source": "https://por.worldlibertyfinancial.com/",
     "introduced": 2
+  },
+  {
+    "chain": "8453",
+    "asset": "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca",
+    "label": "USDbC",
+    "source": "https://github.com/Uniswap/default-token-list/blob/main/src/tokens/base.json",
+    "introduced": 3
   }
 ]

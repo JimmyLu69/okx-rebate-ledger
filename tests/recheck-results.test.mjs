@@ -18,5 +18,5 @@ test('Solana recheck fetches the requested signature and preserves enhanced attr
  const own='So11111111111111111111111111111111111111112',from='A'.repeat(44),sig='B'.repeat(88);configureWallets('',own);
  const oldFetch=globalThis.fetch,calls=[];
  globalThis.fetch=async(url,options)=>{calls.push(JSON.parse(options.body));return new Response(JSON.stringify(String(url).includes('/v0/transactions')?[{signature:sig,feePayer:from,source:'OKX_DEX_ROUTER'}]:{result:{meta:{err:null},transaction:{message:{accountKeys:[from,own],instructions:[{program:'system',parsed:{type:'transfer',info:{source:from,destination:own,lamports:10}}}]}},blockTime:1}}))};
- try{const rows=await inspectSolana(sig,'test-key');assert.equal(rows.length,1);assert.equal(rows[0].suggestedTrader,from);assert.equal(rows[0].source,'OKX_DEX_ROUTER');assert.deepEqual(calls[0].transactions,[sig]);assert.equal(calls[1].params[0],sig)}finally{globalThis.fetch=oldFetch}
+ try{const rows=await inspectSolana(sig,'test-key');assert.equal(rows.length,1);assert.equal(rows[0].suggestedTrader,from);assert.equal(rows[0].source,'OKX_DEX_ROUTER');assert.deepEqual(calls[1].transactions,[sig]);assert.equal(calls[0].params[0],sig)}finally{globalThis.fetch=oldFetch}
 });

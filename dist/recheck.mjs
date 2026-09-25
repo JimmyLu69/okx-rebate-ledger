@@ -1,5 +1,5 @@
 // A checkpoint is specific to decoder revision and the exact known transfer rows.
-export const RECHECK_REVISION=2;
+export const RECHECK_REVISION=3;
 export function recheckFingerprint(rows){return JSON.stringify(rows.filter(r=>!r.feeEvent).map(r=>[r.id,r.asset,r.raw,r.direction]).sort((a,b)=>a[0].localeCompare(b[0])))}
 export async function runRecheckQueue(jobs,inspect,onResult,{signal,concurrency=3}={}){
  let next=0;

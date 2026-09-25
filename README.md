@@ -86,3 +86,11 @@ ABI 与 UID 布局来源：[已验证 Settlement 源码](https://base.blockscout
 ### 重核结果
 
 手动重核覆盖当前筛选范围的 EVM 与 Solana 待核对流水，同一交易只查询一次；不再因旧成功缓存静默跳过。显示流水数与交易数，保存逐笔已解决、部分解决、仍待核对、请求失败、缺少凭证或未处理结果。接口返回成功不等于归属已解决。结果可筛选、查看交易明细、导出，也可仅重试失败 / 未处理项；刷新不自动查询。
+
+### Solana 分类与 Linea 容错
+
+Solana OKX SwapV3 按[发布的程序和账户布局](https://github.com/okxlabs/Web3-DEX-Router-Solana-V1/blob/main/programs/dex-solana/src/instructions/swap_v3.rs)识别签名用户及 commission account 的实际直接转账，不依赖 Helius 标签。自签名且换币源 / 目标账户均属于本钱包的 swap 排除出返佣 / 返还；1 lamport 的 SOL 转入按 dusting 隔离，原始记录保留。其他金额不因此过滤。
+
+Base 假 USDbC `0x006a8a2b11b44a402428492fd5b9b5a483090614` 已撤销信任，升级同时移除旧设置里的该条目；旧备份不能恢复其信任。官方桥接 USDbC 按 [Uniswap 官方代币列表](https://github.com/Uniswap/default-token-list/blob/main/src/tokens/base.json)的完整地址识别。
+
+Linea RPC 每个节点最多等待 12 秒，主节点故障时切换 PublicNode，并优先复用成功节点；两者均失败时报告方法名及各节点错误。不会将失败解释为空历史，也不将请求改成最新区块查询。

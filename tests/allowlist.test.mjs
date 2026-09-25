@@ -22,7 +22,7 @@ test('default upgrades preserve additions and removals, including legacy setting
  const old=normalizeAllowlist(defaults.filter(r=>!r.introduced));
  const saved=[...old.slice(1),...allowed];
  const migrated=upgradeAllowlist(saved,defaults);
- assert.equal(migrated.assets.length,saved.length+4);
+ assert.equal(migrated.assets.length,saved.length+5);
  assert(!migrated.assets.some(r=>r.chain===old[0].chain&&r.asset===old[0].asset));
  assert(migrated.assets.some(r=>r.asset===asset));
  assert.deepEqual(upgradeAllowlist(migrated,defaults),migrated);
@@ -39,4 +39,12 @@ test('new exact identities recover prior false positives without accepting ticke
   assert.equal(spamRecords([record]).length,0);
   assert.equal(spamRecords([{...record,asset:r.chain==='solana'?'A'.repeat(44):asset}]).length,1);
  }}finally{configureAssetAllowlist(null)}
+});
+
+test('revoked fake USDbC is removed from saved policy and cannot be restored by old imports or manual marks',async()=>{
+ const {upgradeAllowlist}=await import('../dist/allowlist.mjs');const defaults=JSON.parse(fs.readFileSync(new URL('../dist/asset-allowlist.json',import.meta.url)));
+ const fake={chain:'8453',asset:'0x006a8a2b11b44a402428492fd5b9b5a483090614'};
+ const policy=upgradeAllowlist({assets:[fake,...allowed],knownDefaults:defaults.filter(r=>r.introduced!==3)},defaults);
+ assert(!policy.assets.some(r=>r.asset===fake.asset));assert(policy.assets.some(r=>r.asset==='0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca'));
+ configureAssetAllowlist([fake]);try{assert.equal(assetAllowed(fake.chain,fake.asset),false);assert.equal(spamRecords([{...seed,...fake,reviewed:true}]).length,1)}finally{configureAssetAllowlist(null)}
 });
