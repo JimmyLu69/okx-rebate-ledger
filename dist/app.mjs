@@ -1,5 +1,5 @@
 import {upgradeAllowlist,normalizeAllowlist,parseAllowlist,formatAllowlist,configureAssetAllowlist} from './allowlist.mjs';
-import {RECHECK_REVISION,recheckFingerprint} from './recheck.mjs';
+import {RECHECK_REVISION,planRecheck,recheckOutcome} from './recheck.mjs';
 import {incrementalStreams,historyBackup,restoreHistory} from './history.mjs';
 import {readHistory,writeHistory} from './storage.mjs';
 import {EVM,SOL,configureWallets,format,canonical,validAddress,mergeRecords,summarize,byAddress,autoAccount,pendingReview,spamRecords} from './ledger.mjs';
@@ -56,7 +56,7 @@ function link(r){const c=chainBy(r.chain);return c.explorer?`${c.explorer.replac
 function matches(r){const q=$('search').value.trim().toLowerCase();return (!['review','spam'].includes(view)||allows('directionFilter',r.direction))&&allows('chainFilter',r.chain)&&allows('tokenFilter',r.chain+':'+r.asset)&&allows('assetFilter',r.asset==='native'?'native':'token')&&(!q||[r.trader,r.from,r.to,r.hash,r.symbol,r.asset].some(s=>s?.toLowerCase().includes(q)))}
 function statusMatches(g){const vs=selectedValues('statusFilter');return !vs.length||vs.includes(g.status)||vs.includes('outstanding')&&['unpaid','partial'].includes(g.status)}
 function complete(id){return state.coverage[id]?.status==='complete'}
-function render(){$('evmDisplay').textContent=EVM||'尚未设置';$('solDisplay').textContent=SOL||'尚未设置';let groups;try{groups=valued()}catch(e){toast(e.message);groups=[]}const pending=pendingReview(state.records),spam=spamRecords(state.records),done=required.filter(complete).length;$('reviewCount').textContent=pending.length;$('recheckPending').hidden=view!=='review';$('recheckPending').disabled=busy;$('spamCount').textContent=spam.length;$('minimumUsd').closest('label').hidden=$('minimumField').hidden=['review','spam'].includes(view);const tokenSelection=selectedValues('tokenFilter');const tokenOptions=new Map(state.records.filter(r=>r.kind!=='ignore').map(r=>[r.chain+':'+r.asset,r]));$('tokenFilter').innerHTML='<option value="all">全部币种 / 合约</option>'+[...tokenOptions].sort((a,b)=>a[1].symbol.localeCompare(b[1].symbol)).map(([k,r])=>`<option value="${esc(k)}">${esc(r.symbol)} · ${esc(chainBy(r.chain).name)} · ${r.asset==='native'?'原生':short(r.asset)}</option>`).join('');for(const o of $('tokenFilter').options)o.selected=tokenSelection.includes(o.value);drawFilterMenus();const outstanding=groups.filter(g=>['unpaid','partial'].includes(g.status)),missing=outstanding.filter(g=>!g.priced).length,quoted=outstanding.filter(g=>g.priced),due=quoted.reduce((n,g)=>n+g.usdRemaining,0),addressCount=new Set(outstanding.map(g=>(g.chain==='solana'?'sol:':'evm:')+g.trader)).size;const heroValue=(!state.records.length||missing&&!quoted.length)?'—':due.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});const [whole,fraction]=heroValue.split('.');$('heroAmount').innerHTML=`${missing&&quoted.length?'<span class="estimate">≥</span>':''}${whole}${fraction?`<span class="fraction">.${fraction}</span>`:''}`;$('heroDetail').textContent=missing?`${missing} 项资产缺少报价，未计入此金额`:state.records.length?'按最新可用报价 · 小额结清项已剔除':'同步历史后，按地址汇总待返金额';$('metrics').innerHTML=[['待返还地址',addressCount],['待核对流水',pending.length],['已扫描网络',`${done}<small> / ${required.length}</small>`]].map(([label,note],i)=>`<article><span class="metricindex">0${i+1}</span><div><p>${label}</p><strong>${note}</strong></div></article>`).join('');$('updated').textContent=state.updated?'更新 '+new Date(state.updated).toLocaleString('zh-CN'):'尚未同步';$('notice').innerHTML=busy?`<div class="progressline"></div>${esc(progress)}`:esc(storageWarn||(done<required.length?`历史扫描 ${done}/${required.length} · 账目持续更新`:(pending.length?'历史扫描完成 · '+pending.length+' 笔待核对':'历史扫描完成')));$('syncButton').textContent=busy?'暂停同步':'同步历史';$('setupButton').disabled=$('retryButton').disabled=busy;let rows=[],headers=[];
+function render(){$('evmDisplay').textContent=EVM||'尚未设置';$('solDisplay').textContent=SOL||'尚未设置';let groups;try{groups=valued()}catch(e){toast(e.message);groups=[]}const pending=pendingReview(state.records),spam=spamRecords(state.records),done=required.filter(complete).length;$('reviewCount').textContent=pending.length;$('recheckPending').hidden=view!=='review';$('recheckPending').disabled=busy;$('recheckResults').hidden=!state.lastRecheck;$('recheckResults').disabled=busy;$('spamCount').textContent=spam.length;$('minimumUsd').closest('label').hidden=$('minimumField').hidden=['review','spam'].includes(view);const tokenSelection=selectedValues('tokenFilter');const tokenOptions=new Map(state.records.filter(r=>r.kind!=='ignore').map(r=>[r.chain+':'+r.asset,r]));$('tokenFilter').innerHTML='<option value="all">全部币种 / 合约</option>'+[...tokenOptions].sort((a,b)=>a[1].symbol.localeCompare(b[1].symbol)).map(([k,r])=>`<option value="${esc(k)}">${esc(r.symbol)} · ${esc(chainBy(r.chain).name)} · ${r.asset==='native'?'原生':short(r.asset)}</option>`).join('');for(const o of $('tokenFilter').options)o.selected=tokenSelection.includes(o.value);drawFilterMenus();const outstanding=groups.filter(g=>['unpaid','partial'].includes(g.status)),missing=outstanding.filter(g=>!g.priced).length,quoted=outstanding.filter(g=>g.priced),due=quoted.reduce((n,g)=>n+g.usdRemaining,0),addressCount=new Set(outstanding.map(g=>(g.chain==='solana'?'sol:':'evm:')+g.trader)).size;const heroValue=(!state.records.length||missing&&!quoted.length)?'—':due.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});const [whole,fraction]=heroValue.split('.');$('heroAmount').innerHTML=`${missing&&quoted.length?'<span class="estimate">≥</span>':''}${whole}${fraction?`<span class="fraction">.${fraction}</span>`:''}`;$('heroDetail').textContent=missing?`${missing} 项资产缺少报价，未计入此金额`:state.records.length?'按最新可用报价 · 小额结清项已剔除':'同步历史后，按地址汇总待返金额';$('metrics').innerHTML=[['待返还地址',addressCount],['待核对流水',pending.length],['已扫描网络',`${done}<small> / ${required.length}</small>`]].map(([label,note],i)=>`<article><span class="metricindex">0${i+1}</span><div><p>${label}</p><strong>${note}</strong></div></article>`).join('');$('updated').textContent=state.updated?'更新 '+new Date(state.updated).toLocaleString('zh-CN'):'尚未同步';$('notice').innerHTML=busy?`<div class="progressline"></div>${esc(progress)}`:esc(storageWarn||(done<required.length?`历史扫描 ${done}/${required.length} · 账目持续更新`:(pending.length?'历史扫描完成 · '+pending.length+' 笔待核对':'历史扫描完成')));$('syncButton').textContent=busy?'暂停同步':'同步历史';$('setupButton').disabled=$('retryButton').disabled=busy;let rows=[],headers=[];
 if(view==='ledger'){
 const displayed=visibleGroups(groups),addresses=byAddress(displayed),totals=addressTotals(displayed);
 headers=['币种','应返','已返','差额','状态',''];
@@ -76,29 +76,41 @@ function currency(r){const quote=r.priced?`1 ${r.symbol} ≈ ${usd(r.price.usd)}
 function settings(){$('assetAllowlist').value=formatAllowlist(assetAllowlist);$('evmWallet').value=EVM;$('solWallet').value=SOL;$('toleranceEnabled').checked=preferences.enabled;$('toleranceValue').value=preferences.threshold;drawChoices();$('settings').showModal()}
 function drawChoices(){const q=$('chainSearch').value.toLowerCase();$('chainChoices').innerHTML=chains.filter(c=>(c.name+' '+c.id).toLowerCase().includes(q)).sort((a,b)=>Number(required.includes(b.id))-Number(required.includes(a.id))).map(c=>`<label><input type="checkbox" data-chain="${c.id}" ${state.selected.includes(c.id)?'checked':''} ${c.unsupported?'disabled':''}>${esc(c.name)}${c.unsupported?'（待接入）':''}</label>`).join('')}
 function showRecords(ids){activeDetail=ids;const records=autoAccount(state.records).filter(r=>ids.includes(r.id));$('detailBody').innerHTML=records.map(r=>`<article class="record"><p><strong>${r.kind==='commission'?'返佣收入':r.kind==='refund'?'已返还':r.kind==='pending'?(r.spam?'疑似垃圾':'待核对'):'未计入'} · ${esc(chainBy(r.chain).name)}</strong><span class="pill" style="float:right">${format(r.raw,r.decimals)} ${esc(r.symbol)}</span></p><p class="mono">${['commission','refund'].includes(r.kind)?'被邀请地址':'归属待确认'}：${esc(['commission','refund'].includes(r.kind)||r.attributionVerified?r.trader:'尚未确认')}</p><p class="mono">交易：${esc(r.hash)}</p><p class="mono">合约：${esc(r.asset)}<br>交易发起人：${esc(r.txSender||'尚未核验')}</p><p class="mono">日志发送：${esc(r.from)}<br>到：${esc(r.to)}</p><p class="evidence">${esc(r.spamReason||r.reviewReason||r.exclusionReason||r.evidence)}</p>${link(r)?`<a href="${esc(link(r))}" rel="noreferrer" target="_blank">查看链上交易 ↗</a>`:''}</article>`).join('');if(!$('detail').open)$('detail').showModal()}
-async function recheckPending(){
+const recheckLabels={queued:'等待处理',missing:'缺少凭证',failed:'请求失败',resolved:'已解决',partial:'部分解决',unresolved:'仍待核对',cancelled:'未处理'};
+function showRecheckReport(){
+ const report=state.lastRecheck;if(!report?.entries)return toast('尚无重核结果');
+ const filter=$('recheckResultFilter').value,entries=report.entries.filter(e=>filter==='all'||(filter==='unresolved'?['unresolved','partial'].includes(e.status):filter==='cancelled'?['cancelled','queued'].includes(e.status):e.status===filter));
+ const count=status=>report.entries.filter(e=>e.status===status).length;
+ $('recheckSummary').textContent=`范围 ${report.before} / ${report.total??report.before} 条流水 → ${report.entries.length} 笔交易 · 已解决 ${count('resolved')} · 部分解决 ${count('partial')} · 仍待核对 ${count('unresolved')} · 失败 ${count('failed')} · 缺凭证 ${count('missing')} · 未处理 ${count('queued')+count('cancelled')}`;
+ $('recheckRows').innerHTML=entries.map(e=>`<tr><td>${esc(chainBy(e.chain).name)}<br><a class="mono" href="${esc(link(e))}" target="_blank" rel="noreferrer">${esc(short(e.hash))} ↗</a></td><td>${esc(recheckLabels[e.status])}<span class="cellsub">待核对 ${e.before} → ${e.after} 条</span></td><td>${esc(e.error||(['unresolved','partial'].includes(e.status)?'接口返回正常，但归属凭证仍不足':'已按当前识别规则处理'))}</td><td><button class="secondary small" data-recheck-detail="${esc(e.key)}">明细</button></td></tr>`).join('');
+ $('retryRecheckFailures').disabled=busy||!report.entries.some(e=>['failed','missing','cancelled','queued'].includes(e.status));
+ if(!$('recheckReport').open)$('recheckReport').showModal();
+}
+$('recheckResults').onclick=showRecheckReport;$('recheckResultFilter').onchange=showRecheckReport;
+$('recheckRows').onclick=e=>{const b=e.target.closest('[data-recheck-detail]');if(b)showRecords(state.records.filter(r=>r.chain+':'+r.hash===b.dataset.recheckDetail).map(r=>r.id))};
+$('retryRecheckFailures').onclick=()=>{const keys=new Set(state.lastRecheck.entries.filter(e=>['failed','missing','cancelled','queued'].includes(e.status)).map(e=>e.key));$('recheckReport').close();recheckPending(keys)};
+$('exportRecheckResults').onclick=()=>download('重核结果.json',JSON.stringify(state.lastRecheck,null,2));
+async function recheckPending(retryKeys=null){
  if(busy)return;
- const candidates=pendingReview(state.records).filter(matches).filter(r=>r.chain!=='solana'&&!r.reviewed);
- const byTx=new Map();for(const r of state.records){if(r.feeEvent)continue;const key=r.chain+':'+r.hash;if(!byTx.has(key))byTx.set(key,[]);byTx.get(key).push(r)}
- const targets=[...new Map(candidates.map(r=>[r.chain+':'+r.hash,{chain:r.chain,hash:r.hash}])).entries()];
- if(!targets.length)return toast('当前筛选下没有可重核的 EVM 交易');
- state.recheckCache||={};let reused=0,skipped=0;
- const jobs=[];for(const [key,t]of targets){const chain=chainBy(t.chain),rows=byTx.get(key)||[],fingerprint=recheckFingerprint(rows),cached=state.recheckCache[key];
-  if(cached?.revision===RECHECK_REVISION&&cached.fingerprint===fingerprint){reused++;continue}
-  if(!keys[chain.provider||'blockscout']){skipped++;continue}
-  jobs.push({key,chain,hash:t.hash,rows,fingerprint});
- }
- if(!jobs.length)return toast(`无需重复查询：已核验 ${reused} 笔${skipped?'，缺少凭证 '+skipped+' 笔':''}`);
- let worker;try{worker=new Worker(new URL('./recheck-worker.mjs',import.meta.url),{type:'module'})}catch{return toast('无法启动核验线程，请刷新后重试')}
+ const candidates=pendingReview(state.records).filter(r=>retryKeys?retryKeys.has(r.chain+':'+r.hash):matches(r));
+ const {entries,jobs}=planRecheck(candidates,state.records,chainBy,keys);
+ if(!entries.length)return toast('当前范围没有待核对流水');
+ state.lastRecheck={started:new Date().toISOString(),before:candidates.length,total:pendingReview(state.records).length,entries};
+ state.recheckCache||={};
+ const byTx=new Map(jobs.map(j=>[j.key,j.rows]));
+ await save();
+ if(!jobs.length){render();return showRecheckReport()}
+ let worker;try{worker=new Worker(new URL('./recheck-worker.mjs',import.meta.url),{type:'module'})}catch{for(const e of entries)if(e.status==='queued'){e.status='cancelled';e.error='无法启动核验线程'}await save();render();return showRecheckReport()}
  busy=true;controller=new AbortController;let checked=0,failed=0,buffer=[],lastFlush=Date.now(),flushQueue=Promise.resolve(),fatal='',finished=false;
  const started=Date.now();
- const updateProgress=()=>{const seconds=Math.max(1,(Date.now()-started)/1000);progress=`重核 ${checked+failed}/${jobs.length} · ${((checked+failed)*60/seconds).toFixed(1)} 笔/分钟 · 失败 ${failed}${reused?' · 已跳过 '+reused+' 笔':''}${document.hidden?' · 后台运行，系统休眠可能暂停':''}`;};
+ const updateProgress=()=>{const seconds=Math.max(1,(Date.now()-started)/1000);progress=`重核 ${checked+failed}/${jobs.length} 笔交易 · ${((checked+failed)*60/seconds).toFixed(1)} 笔/分钟 · 请求失败 ${failed} · 范围 ${candidates.length} 条流水${document.hidden?' · 后台运行，系统休眠可能暂停':''}`;};
  const flush=()=>{const batch=buffer.splice(0);if(!batch.length)return flushQueue;lastFlush=Date.now();
   const replacements=[];for(const r of batch){const cov=state.coverage[r.chain]||={streams:{},inspected:[]};cov.inspected||=[];cov.inspectionErrors||={};
    if(r.error){cov.inspectionErrors[r.hash]=r.error;cov.inspected=cov.inspected.filter(h=>h!==r.hash);for(const row of byTx.get(r.key)||[])replacements.push({...row,inspectionError:r.error})}
    else{replacements.push(...r.rows.map(row=>{const clean={...row};delete clean.inspectionError;return clean}));if(!cov.inspected.includes(r.hash))cov.inspected.push(r.hash);delete cov.inspectionErrors[r.hash];state.recheckCache[r.key]={revision:RECHECK_REVISION,fingerprint:r.fingerprint};}
   }
   state.records=mergeRecords(state.records,replacements);state.updated=new Date().toISOString();
+  const pendingNow=pendingReview(state.records);for(const result of batch){const index=state.lastRecheck.entries.findIndex(e=>e.key===result.key);state.lastRecheck.entries[index]=recheckOutcome(state.lastRecheck.entries[index],pendingNow,result.error)}
   flushQueue=flushQueue.then(()=>save());flushQueue.catch(()=>{});updateProgress();if(!document.hidden)render();return flushQueue;
  };
  const visibility=()=>{flush();updateProgress();if(!document.hidden)render()};
@@ -111,7 +123,12 @@ async function recheckPending(){
   worker.postMessage({type:'start',jobs,keys,routers,wallets:{evm:EVM,sol:SOL}});
  });await flush();await flushQueue;}catch(e){fatal=e.message;try{await flush()}catch{}}finally{
   worker.terminate();document.removeEventListener('visibilitychange',visibility);controller.signal.removeEventListener('abort',cancel);
-  busy=false;progress='';render();refreshPrices();toast(fatal?'重核中断：'+fatal:`${controller.signal.aborted||!finished?'已暂停':'重核完成'}：${checked} 笔，失败 ${failed} 笔${skipped?'，缺少凭证 '+skipped+' 笔':''}；已保存进度`);
+  for(const entry of state.lastRecheck.entries)if(entry.status==='queued'){entry.status='cancelled';entry.error=fatal||'任务已暂停，可重试未处理项'}
+  const finalPending=pendingReview(state.records);state.lastRecheck.entries=state.lastRecheck.entries.map(e=>['resolved','partial','unresolved','failed'].includes(e.status)?recheckOutcome(e,finalPending,e.error):e);
+  state.lastRecheck.finished=new Date().toISOString();busy=false;progress='';
+  try{await save()}catch(e){storageWarn=e.message}
+  render();refreshPrices();showRecheckReport();
+
  }
 }
 $('recheckPending').onclick=()=>recheckPending();

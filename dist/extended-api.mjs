@@ -9,9 +9,11 @@ const hashOK = s => /^0x[0-9a-f]{64}$/.test(lower(s));
 const integer = v => { const n = Number(v); if (!Number.isSafeInteger(n) || n < 0) throw Error('数据源区块高度无效'); return n; };
 
 export async function rpc(url, method, params, signal) {
-  const r = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }, signal);
-  if (!Object.hasOwn(r, 'result') || r.result == null) throw Error('节点未返回完整交易数据，请稍后重试');
-  return r.result;
+  try{
+    const r = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }, signal);
+    if (!Object.hasOwn(r, 'result') || r.result == null) throw Error('节点未返回完整交易数据，请稍后重试');
+    return r.result;
+  }catch(e){throw Error(method+'：'+e.message)}
 }
 export async function etherscan(key, chain, action, params, signal) {
   if (!key) throw Error('请填写 Etherscan API Key');
