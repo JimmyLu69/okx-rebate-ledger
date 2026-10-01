@@ -155,6 +155,18 @@ try{
    }
   }
  }
+ await check('all 125 confirmed group records are reachable through detail pagination',async()=>{
+  const many=seed();many.records=Array.from({length:125},(_,index)=>{const hash='0x'+(index+1).toString(16).padStart(64,'0');return{...row,hash,id:`8453:${hash}:fee:1`}});many.coverage['8453'].inspected=many.records.map(row=>row.hash);many.lastRecheck=null;
+  await page.evaluate(async({key,state})=>{const storage=await import('./storage.mjs');await storage.readHistory(key);await storage.writeHistory(key,state)},{key:walletKey,state:many});
+  await page.reload({waitUntil:'networkidle'});await page.locator('#rowCount').filter({hasText:'1 个地址'}).waitFor({timeout:15000});await page.locator('#tableArea [data-group]').first().click();
+  const ids=()=>page.locator('#detailBody [data-decision]').evaluateAll(forms=>forms.map(form=>form.dataset.decision));
+  assert.equal(await page.locator('#detailBody > article.record').count(),50);assert.equal(await page.locator('#detailPageNum').innerText(),'1 / 3 · 125 条');assert(await page.locator('#detailPrev').isDisabled());const first=await ids();
+  await page.locator('#detailNext').click();assert.equal(await page.locator('#detailBody > article.record').count(),50);assert.equal(await page.locator('#detailPageNum').innerText(),'2 / 3 · 125 条');const second=await ids();
+  await page.locator('#detailNext').click();assert.equal(await page.locator('#detailBody > article.record').count(),25);assert.equal(await page.locator('#detailPageNum').innerText(),'3 / 3 · 125 条');assert(await page.locator('#detailNext').isDisabled());const third=await ids();
+  assert.deepEqual(new Set([...first,...second,...third]),new Set(many.records.map(row=>row.id)),'Every confirmed record must appear on exactly one page');
+  await page.locator('#detailPrev').click();assert.equal(await page.locator('#detailPageNum').innerText(),'2 / 3 · 125 条');assert.deepEqual(await ids(),second);await closeDialogs(page);
+ });
+ assert.deepEqual(pageErrors,[],'Unexpected browser JS errors');
  console.log(JSON.stringify({passed:passed.length,failed:failures.length,failures},null,2));
  await context.close();if(failures.length)process.exitCode=1;
 }finally{await browser?.close();if(server)await new Promise(resolve=>server.close(resolve))}

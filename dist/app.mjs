@@ -113,6 +113,7 @@ let policyVersion = 0,
   priceBusy = false,
   renderTimer,
   activeRecordIds = [],
+  detailPage = 1,
   settingsDraft = [],
   importCandidate,
   importWallet;
@@ -924,52 +925,56 @@ async function sync(onlyId = null, retryOnly = false) {
 }
 function showRecords(ids) {
   activeRecordIds = ids;
+  detailPage = 1;
   renderDetails();
   if (!$("detail").open) $("detail").showModal();
 }
 function renderDetails() {
-  const rows = activeRecordIds
-    .map((id) => model().byId.get(id))
-    .filter(Boolean)
-    .slice(0, 100);
-  $("detailBody").innerHTML =
-    rows
-      .map((row) => {
-        const decision = state.decisions[row.id],
-          roles = row.roles || {};
-        const type = row.spam
-          ? "疑似垃圾"
-          : row.kind === "commission"
-            ? "返佣收入"
-            : row.kind === "refund"
-              ? "返还支出"
-              : row.kind === "ignore"
-                ? "其他 / 未计入"
-                : "待核对";
-        const fields = [
-          [
-            "归属地址",
-            ["commission", "refund"].includes(row.kind)
-              ? row.trader
-              : "尚未确认",
-          ],
-          ["网络", chainBy(row.chain).name],
-          ["币种合约", row.asset],
-          ["交易", row.hash],
-          ["交易发起人", roles.transactionSender || row.txSender || "未核验"],
-          ["订单持有人", roles.owner || "未取得证明"],
-          ["路由合约", roles.router || "—"],
-          ["手续费支付者", roles.feePayer || row.suggestedTrader || "—"],
-          ["付款授权", roles.authority || "—"],
-          ["日志发送", row.from],
-          ["日志接收", row.to],
-        ];
-        return `<article class="record"><strong>${esc(type)} · ${esc(format(row.raw, row.decimals))} ${esc(row.symbol)}</strong><p class="evidence">${esc(row.spamReason || row.reviewReason || row.exclusionReason || row.evidence || "")}</p><dl>${fields.map(([label, value]) => `<dt>${esc(label)}</dt><dd class="mono">${esc(value)}</dd>`).join("")}</dl><div class="actions"><a href="${esc(link(row))}" target="_blank" rel="noreferrer">链上交易 ↗</a><button class="textbutton" data-copy="${esc(format(row.raw, row.decimals))}">复制完整金额</button></div>${!row.supersededBy && row.raw !== "0" ? `<details class="decisionform"><summary>${decision ? "修改人工判断" : "人工核对"}</summary><p class="metadata">按实际用途判断。原始流水保留，可随时撤销。${row.importedUnverified ? "此记录来自备份；人工用途已保留，需先核验交易与金额才会生效。" : ""}</p><form data-decision="${esc(row.id)}"><label class="field">用途<select name="kind"><option value="pending">待核对</option>${row.direction === "in" ? '<option value="commission">返佣</option>' : '<option value="refund">返还</option>'}<option value="ignore">其他用途，不计入</option></select></label><label class="field">归属地址<input name="trader" value="${esc(decision?.trader || (["commission", "refund"].includes(row.kind) ? row.trader : ""))}" autocomplete="off" placeholder="最终被邀请地址"></label><label class="field">判断原因<input name="reason" maxlength="500" value="${esc(decision?.reason || "")}" required placeholder="用途或凭证说明"></label><div class="actions"><button type="submit" ${busy ? "disabled" : ""}>保存判断</button>${decision ? `<button class="secondary" type="button" data-undo="${esc(row.id)}">撤销人工判断</button>` : ""}</div></form></details>` : ""}${row.spam ? `<div class="actions"><button class="secondary" data-keep="${esc(row.id)}">仅保留这笔记录</button>${row.asset !== "native" ? `<button class="secondary" data-trust="${esc(row.id)}">信任此合约</button>` : ""}</div>` : ""}<details><summary>开发者诊断</summary><button class="secondary" data-case="${esc(row.id)}">复制案例</button></details></article>`;
-      })
-      .join("") +
-    (activeRecordIds.length > 100
-      ? '<p class="metadata">仅展开前 100 条凭证；可在核对记录按交易搜索。</p>'
-      : "");
+  const byId = model().byId,
+    paged = pageItems(
+      activeRecordIds.map((id) => byId.get(id)).filter(Boolean),
+      detailPage,
+      50,
+    ),
+    rows = paged.items;
+  detailPage = paged.page;
+  $("detailPager").hidden = paged.max <= 1;
+  $("detailPageNum").textContent =
+    `${detailPage} / ${paged.max} · ${paged.total} 条`;
+  $("detailPrev").disabled = detailPage <= 1;
+  $("detailNext").disabled = detailPage >= paged.max;
+  $("detailBody").innerHTML = rows
+    .map((row) => {
+      const decision = state.decisions[row.id],
+        roles = row.roles || {};
+      const type = row.spam
+        ? "疑似垃圾"
+        : row.kind === "commission"
+          ? "返佣收入"
+          : row.kind === "refund"
+            ? "返还支出"
+            : row.kind === "ignore"
+              ? "其他 / 未计入"
+              : "待核对";
+      const fields = [
+        [
+          "归属地址",
+          ["commission", "refund"].includes(row.kind) ? row.trader : "尚未确认",
+        ],
+        ["网络", chainBy(row.chain).name],
+        ["币种合约", row.asset],
+        ["交易", row.hash],
+        ["交易发起人", roles.transactionSender || row.txSender || "未核验"],
+        ["订单持有人", roles.owner || "未取得证明"],
+        ["路由合约", roles.router || "—"],
+        ["手续费支付者", roles.feePayer || row.suggestedTrader || "—"],
+        ["付款授权", roles.authority || "—"],
+        ["日志发送", row.from],
+        ["日志接收", row.to],
+      ];
+      return `<article class="record"><strong>${esc(type)} · ${esc(format(row.raw, row.decimals))} ${esc(row.symbol)}</strong><p class="evidence">${esc(row.spamReason || row.reviewReason || row.exclusionReason || row.evidence || "")}</p><dl>${fields.map(([label, value]) => `<dt>${esc(label)}</dt><dd class="mono">${esc(value)}</dd>`).join("")}</dl><div class="actions"><a href="${esc(link(row))}" target="_blank" rel="noreferrer">链上交易 ↗</a><button class="textbutton" data-copy="${esc(format(row.raw, row.decimals))}">复制完整金额</button></div>${!row.supersededBy && row.raw !== "0" ? `<details class="decisionform"><summary>${decision ? "修改人工判断" : "人工核对"}</summary><p class="metadata">按实际用途判断。原始流水保留，可随时撤销。${row.importedUnverified ? "此记录来自备份；人工用途已保留，需先核验交易与金额才会生效。" : ""}</p><form data-decision="${esc(row.id)}"><label class="field">用途<select name="kind"><option value="pending">待核对</option>${row.direction === "in" ? '<option value="commission">返佣</option>' : '<option value="refund">返还</option>'}<option value="ignore">其他用途，不计入</option></select></label><label class="field">归属地址<input name="trader" value="${esc(decision?.trader || (["commission", "refund"].includes(row.kind) ? row.trader : ""))}" autocomplete="off" placeholder="最终被邀请地址"></label><label class="field">判断原因<input name="reason" maxlength="500" value="${esc(decision?.reason || "")}" required placeholder="用途或凭证说明"></label><div class="actions"><button type="submit" ${busy ? "disabled" : ""}>保存判断</button>${decision ? `<button class="secondary" type="button" data-undo="${esc(row.id)}">撤销人工判断</button>` : ""}</div></form></details>` : ""}${row.spam ? `<div class="actions"><button class="secondary" data-keep="${esc(row.id)}">仅保留这笔记录</button>${row.asset !== "native" ? `<button class="secondary" data-trust="${esc(row.id)}">信任此合约</button>` : ""}</div>` : ""}<details><summary>开发者诊断</summary><button class="secondary" data-case="${esc(row.id)}">复制案例</button></details></article>`;
+    })
+    .join("");
   for (const form of $("detailBody").querySelectorAll("[data-decision]"))
     form.elements.kind.value =
       state.decisions[form.dataset.decision]?.kind || "pending";
@@ -1803,6 +1808,16 @@ $("tableArea").onclick = (event) => {
       : expandedAddresses.add(key);
     render();
   }
+};
+$("detailPrev").onclick = () => {
+  detailPage--;
+  renderDetails();
+  $("detail").scrollTop = 0;
+};
+$("detailNext").onclick = () => {
+  detailPage++;
+  renderDetails();
+  $("detail").scrollTop = 0;
 };
 $("detailBody").onsubmit = (event) => {
   const form = event.target.closest("[data-decision]");
