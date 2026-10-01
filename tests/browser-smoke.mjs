@@ -2,9 +2,10 @@
 // Run: node tests/browser-smoke.mjs
 // Overrides: PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs
 //            CHROMIUM_EXECUTABLE=/path/to/chromium  BROWSER_SMOKE_URL=http://127.0.0.1:PORT
+//            SMOKE_SCREENSHOT_DIR=/tmp/rebate-final-ui
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {readFile,stat} from 'node:fs/promises';
+import {readFile,stat,mkdir} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {homedir} from 'node:os';
 import {resolve,dirname,extname} from 'node:path';
@@ -127,6 +128,15 @@ try{
   assert(reached,'Import history must be reachable with Tab, not display:none without keyboard label');await closeDialogs(page);
   await page.locator('#ledgerTab').focus();await page.keyboard.press('ArrowRight');assert.equal(await page.locator('#reviewTab').getAttribute('aria-selected'),'true');await page.keyboard.press('ArrowLeft');assert.equal(await page.locator('#ledgerTab').getAttribute('aria-selected'),'true');
  });
+ await check('desktop amount headers align with the right edge of their numbers',async()=>{
+  await page.setViewportSize({width:1280,height:900});await page.locator('#ledgerTab').click();
+  const edges=await page.evaluate(()=>{
+   const headers=document.querySelectorAll('#tableArea thead th'),row=[...document.querySelectorAll('#tableArea tbody tr')].find(row=>row.querySelector('.quantity'));
+   const textRight=element=>{const range=document.createRange();range.selectNodeContents(element);return range.getBoundingClientRect().right};
+   return [1,2,3].map(index=>({label:headers[index].textContent,header:textRight(headers[index]),amount:textRight(row.children[index].querySelector('.quantity'))}));
+  });
+  for(const edge of edges)assert(Math.abs(edge.header-edge.amount)<=1,`${edge.label}: header right ${edge.header} differs from number right ${edge.amount}`);
+ });
  await check('390px layouts have no horizontal overflow in main and settings',async()=>{
   await page.setViewportSize({width:390,height:844});await page.locator('#ledgerTab').click();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Main document overflows 390px');
@@ -134,6 +144,17 @@ try{
   await page.locator('#backupCenterButton').click();assert(await page.locator('#backupCenter').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'Backup content overflows 390px');await closeDialogs(page);
  });
  assert.deepEqual(pageErrors,[],'Unexpected browser JS errors');
+ if(process.env.SMOKE_SCREENSHOT_DIR){
+  const directory=resolve(process.env.SMOKE_SCREENSHOT_DIR);await mkdir(directory,{recursive:true});await closeDialogs(page);await page.locator('#ledgerTab').click();
+  await page.locator('#toast').evaluate(el=>el.style.display='none');
+  for(const [size,viewport]of Object.entries({desktop:{width:1280,height:900},mobile:{width:390,height:844}})){
+   await page.setViewportSize(viewport);
+   for(const theme of ['light','dark']){
+    await page.locator('#themeSelect').selectOption(theme);await page.waitForFunction(theme=>document.documentElement.dataset.theme===theme,theme);await page.evaluate(async()=>{await document.fonts.ready;window.scrollTo(0,0);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    const path=resolve(directory,`${size}-${theme}.png`);await page.screenshot({path,fullPage:true});console.log(`SCREENSHOT ${path}`);
+   }
+  }
+ }
  console.log(JSON.stringify({passed:passed.length,failed:failures.length,failures},null,2));
  await context.close();if(failures.length)process.exitCode=1;
 }finally{await browser?.close();if(server)await new Promise(resolve=>server.close(resolve))}

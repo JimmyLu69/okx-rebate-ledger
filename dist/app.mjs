@@ -539,7 +539,7 @@ function render() {
   page = paged.page;
   $("tableArea").dataset.view = view;
   $("tableArea").innerHTML =
-    `<table><thead><tr>${headers.map((h, i) => `<th scope="col"${[2, 3, 4].includes(i) ? ' class="num"' : ""}>${esc(h)}</th>`).join("")}</tr></thead><tbody>${paged.items.map(renderRow).join("") || `<tr><td class="empty" colspan="${headers.length}"><h3>${state.records.length ? "当前范围没有记录" : "还没有账目"}</h3><p>${state.records.length ? "调整筛选查看其他记录。" : "设置钱包和数据源后开始同步，或导入历史备份。"}</p></td></tr>`}</tbody></table>`;
+    `<table><thead><tr>${headers.map((h, i) => `<th scope="col"${(view === "ledger" ? [1, 2, 3] : view === "assets" ? [1, 2, 3, 4, 5] : [2]).includes(i) ? ' class="num"' : ""}>${esc(h)}</th>`).join("")}</tr></thead><tbody>${paged.items.map(renderRow).join("") || `<tr><td class="empty" colspan="${headers.length}"><h3>${state.records.length ? "当前范围没有记录" : "还没有账目"}</h3><p>${state.records.length ? "调整筛选查看其他记录。" : "设置钱包和数据源后开始同步，或导入历史备份。"}</p></td></tr>`}</tbody></table>`;
   for (const tr of $("tableArea").querySelectorAll(
     "tr:not(.addresshead):not(.assetfold)",
   ))
