@@ -7,7 +7,7 @@ import {autoAccount,summarize,pendingReview,spamRecords} from '../dist/ledger.mj
 const asset='0x'+'4'.repeat(40),allowed=[{chain:'4663',asset}];
 test('default maintained list contains valid unique chain-specific identities',()=>{const rows=JSON.parse(fs.readFileSync(new URL('../dist/asset-allowlist.json',import.meta.url)));assert.equal(normalizeAllowlist(rows).length,rows.length)});
 test('strict policy overrides old manual and automatic entries without deleting underlying history',()=>{
- configureAssetAllowlist([]);try{const original={...seed,asset,reviewed:true};const input=[original];const rows=autoAccount(input);assert.equal(rows[0].spam,true);assert.equal(spamRecords(input).length,1);assert.equal(summarize(rows).length,0);assert.equal(pendingReview(input).length,0);assert.equal(original.kind,'commission');assert.equal(spamRecords([{...original,spamDismissed:true}]).length,1);assert.equal(summarize(autoAccount([seed])).length,1);
+ configureAssetAllowlist([]);try{const original={...seed,asset,reviewed:true};const input=[original];const rows=autoAccount(input);assert.equal(rows[0].spam,true);assert.equal(spamRecords(input).length,1);assert.equal(summarize(rows).length,0);assert.equal(pendingReview(input).length,0);assert.equal(original.kind,'commission');assert.equal(spamRecords([{...original,spamDismissed:true}]).length,1);assert.equal(summarize(autoAccount([{...seed,feeEvent:true,protocol:'legacy-router',attributionVerified:true,receiptMatched:true}])).length,1);
  configureAssetAllowlist(allowed);assert.equal(summarize(autoAccount(input))[0].due,original.raw);assert.equal(summarize(autoAccount(rows))[0].due,original.raw);
  }finally{configureAssetAllowlist(null)}
 });

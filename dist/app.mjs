@@ -1,159 +1,1982 @@
-import {revokedAsset,upgradeAllowlist,normalizeAllowlist,parseAllowlist,formatAllowlist,configureAssetAllowlist} from './allowlist.mjs';
-import {RECHECK_REVISION,planRecheck,recheckOutcome} from './recheck.mjs';
-import {incrementalStreams,historyBackup,restoreHistory} from './history.mjs';
-import {readHistory,writeHistory} from './storage.mjs';
-import {EVM,SOL,configureWallets,format,canonical,validAddress,mergeRecords,summarize,byAddress,autoAccount,pendingReview,spamRecords} from './ledger.mjs';
-import {lookupPrices} from './prices.mjs';
-import {valueGroups,addressTotals,filterMinimum} from './valuation.mjs';
-import {scanEVM,inspectEVM,scanSolana} from './api.mjs';
-import {scanLinea,scanBSC,inspectExtended} from './extended-api.mjs';
-import {scanXLayer,inspectXLayer} from './xlayer-api.mjs';
-const inspectorFor=c=>c.provider==='xlayer'?inspectXLayer:inspectExtended;
-const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),short=a=>a?.length>18?a.slice(0,8)+'…'+a.slice(-6):a||'待确认';
-const required=['4663','solana','56','196','1','8453','137','10','42161','5042','57073','59144'];
-const extra=[{id:'solana',name:'Solana',symbol:'SOL',decimals:9,explorer:'https://solscan.io'},{id:'56',name:'BNB Chain',symbol:'BNB',decimals:18,explorer:'https://bscscan.com',provider:'nodereal'},{id:'196',name:'X Layer',symbol:'OKB',decimals:18,explorer:'https://www.oklink.com/xlayer',provider:'xlayer'},{id:'59144',name:'Linea',symbol:'ETH',decimals:18,explorer:'https://lineascan.build',provider:'etherscan'}];
-const [catalog,routers]=await Promise.all([fetch('./chains.json').then(r=>r.json()),fetch('./routers.json').then(r=>r.json())]);const chains=[...catalog,...extra];const chainBy=id=>chains.find(c=>c.id===id)||{id,name:id,explorer:''};
-let state={version:1,records:[],selected:required,coverage:{},updated:null},view='ledger',page=1,busy=false,controller,progress='',storageWarn='',activeDetail=[],keys={blockscout:'',helius:'',nodereal:'',etherscan:'',xlayer:null};
-const credentialFields={blockscoutKey:'blockscout',heliusKey:'helius',noderealKey:'nodereal',etherscanKey:'etherscan'};
-try{const saved=JSON.parse(localStorage.getItem('rebate-credentials-v1')||'null');if(saved){for(const[id,k]of Object.entries(credentialFields)){keys[k]=typeof saved[k]==='string'?saved[k]:'';$(id).value=keys[k]}if(saved.xlayer&&['key','secret','passphrase'].every(k=>typeof saved.xlayer[k]==='string')){keys.xlayer=saved.xlayer;for(const[id,k]of [['xlayerKey','key'],['xlayerSecret','secret'],['xlayerPassphrase','passphrase']])$(id).value=keys.xlayer[k]}}}catch{storageWarn='已保存凭证无法读取，请重新填写。'}
-const defaultAllowlist=await fetch('./asset-allowlist.json').then(r=>r.json());
-let assetAllowlist=normalizeAllowlist(defaultAllowlist);
-try{
- const saved=JSON.parse(localStorage.getItem('rebate-asset-allowlist-v2')||localStorage.getItem('rebate-asset-allowlist-v1')||'null');
- const policy=upgradeAllowlist(saved,defaultAllowlist);assetAllowlist=policy.assets;
- localStorage.setItem('rebate-asset-allowlist-v2',JSON.stringify(policy));
-}catch{storageWarn='白名单读取或保存失败，已使用可用名单'}
-configureAssetAllowlist(assetAllowlist);
-const updateAllowlist=rows=>{const next=normalizeAllowlist(rows);if(next.some(r=>revokedAsset(r.chain,r.asset)))throw Error('名单包含已撤销信任的假 USDbC 合约，请移除');localStorage.setItem('rebate-asset-allowlist-v2',JSON.stringify({assets:next,knownDefaults:normalizeAllowlist(defaultAllowlist)}));assetAllowlist=next;configureAssetAllowlist(next);prices={};};
-function validateRecord(r){if(!r||typeof r!=='object'||typeof r.id!=='string'||!r.id||r.id.length>300||!chains.some(c=>c.id===r.chain)||typeof r.hash!=='string'||!(r.chain==='solana'?/^[1-9A-HJ-NP-Za-km-z]{64,100}$/:/^0x[\da-fA-F]{64}$/).test(r.hash)||!['native',r.asset].includes(r.asset)||r.asset!=='native'&&!validAddress(r.chain,r.asset)||!Number.isInteger(r.decimals)||r.decimals<0||r.decimals>36||typeof r.raw!=='string'||!/^\d{1,100}$/.test(r.raw)||typeof r.symbol!=='string'||r.symbol.length>100||!['commission','refund','pending','ignore'].includes(r.kind)||!['in','out'].includes(r.direction)||r.kind==='commission'&&r.direction!=='in'||r.kind==='refund'&&r.direction!=='out'||['commission','refund'].includes(r.kind)&&!validAddress(r.chain,r.trader||''))throw Error('记录格式不正确：请使用看板导出的 JSON，金额必须是最小单位整数字符串');return r}
-try{const saved=JSON.parse(localStorage.getItem('rebate-ledger-v1')||'null');if(saved?.version===1&&Array.isArray(saved.records)){saved.records.forEach(validateRecord);state={...state,...saved,selected:Array.isArray(saved.selected)?[...new Set(saved.selected.filter(id=>chains.some(c=>c.id===id)))]:required,coverage:saved.coverage||{}}}}catch{storageWarn='本机保存的数据无法读取；当前显示已核实示例。请导入备份恢复。'}
-let preferences={enabled:true,threshold:'0.1'},prices={},priceBusy=false;
-try{preferences={...preferences,...JSON.parse(localStorage.getItem('rebate-preferences-v1')||'{}')}}catch{}
-let wallets;try{wallets=JSON.parse(localStorage.getItem('rebate-wallets-v1')||'null')}catch{}
-// Upgrade an existing browser locally; no personal wallet is shipped as a default.
-if(!wallets){const own=chain=>state.records.find(r=>(r.chain==='solana')===(chain==='solana')&&r.direction==='in'&&(r.kind==='commission'||r.feeEvent||r.source==='OKX_DEX_ROUTER'))?.to||'';wallets={evm:own('1'),sol:own('solana')};}
-configureWallets(wallets.evm,wallets.sol);
-const walletStorage=()=> 'rebate-ledger-wallet:'+EVM+':'+SOL;
-try{const saved=JSON.parse(localStorage.getItem(walletStorage())||'null');if(saved?.version===1){saved.records.forEach(validateRecord);state=saved}}catch{storageWarn='当前钱包账目无法读取，请恢复备份'}
-try{const persisted=await readHistory(walletStorage());if(persisted){persisted.records.forEach(validateRecord);state=persisted}}catch{storageWarn='历史数据库不可用，请导出备份后检查浏览器存储权限'}
-function migrateDecoder(){if(state.decoderVersion!==3){for(const [id,c]of Object.entries(state.coverage)){if(id!=='solana'){c.inspected=[];c.inspectionErrors=Object.fromEntries([...new Set(state.records.filter(r=>r.chain===id).map(r=>r.hash))].map(h=>[h,'需更新旧版返佣解析']));c.status='stale'}}state.decoderVersion=3}}
-migrateDecoder();
-const selectedValues=id=>[...$(id).selectedOptions].map(o=>o.value).filter(v=>v!=='all');
-function drawFilterMenus(){for(const menu of document.querySelectorAll('[data-filter]')){const select=$(menu.dataset.filter),options=[...select.options].filter(o=>o.value!=='all'),body=menu.querySelector('.checkmenu'),signature=JSON.stringify(options.map(o=>[o.value,o.text]));if(body.dataset.signature!==signature){body.innerHTML=options.map(o=>`<label><input type="checkbox" value="${esc(o.value)}"><span>${esc(o.text)}</span></label>`).join('');body.dataset.signature=signature}const chosen=new Set(selectedValues(select.id));for(const input of body.querySelectorAll('input')){input.checked=chosen.has(input.value);input.disabled=select.disabled}menu.querySelector('.filtercount').textContent=chosen.size||'';menu.classList.toggle('has-selection',chosen.size>0);menu.hidden=view==='coverage'||['review','spam'].includes(view)&&select.id==='statusFilter'||!['review','spam'].includes(view)&&select.id==='directionFilter'}}
-for(const menu of document.querySelectorAll('[data-filter]')){menu.addEventListener('change',e=>{if(e.target.type!=='checkbox')return;const select=$(menu.dataset.filter);for(const option of select.options)if(option.value===e.target.value)option.selected=e.target.checked;page=1;render()});menu.addEventListener('toggle',()=>{if(menu.open)for(const other of document.querySelectorAll('[data-filter]'))if(other!==menu)other.open=false})}
-document.addEventListener('click',e=>{for(const menu of document.querySelectorAll('[data-filter]'))if(!menu.contains(e.target))menu.open=false});document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const menu of document.querySelectorAll('[data-filter]')){if(menu.open){menu.open=false;menu.querySelector('summary').focus()}}});
-const allows=(id,value)=>!selectedValues(id).length||selectedValues(id).includes(value);
-const valued=()=>valueGroups(summarize(autoAccount(state.records)),prices,preferences);
-const visibleGroups=groups=>filterMinimum(groups.filter(matches).filter(statusMatches),$('minimumUsd').value,$('minimumField').value);
-const usd=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:4})+' U';
-async function refreshPrices(){if(priceBusy)return;priceBusy=true;$('priceStatus').textContent='报价更新中';const assets=[...new Map(summarize(autoAccount(state.records)).map(g=>[g.chain+':'+g.asset,{chain:g.chain,asset:g.asset}])).values()];let failed=false;try{for(let i=0;i<assets.length;i+=30){const batch=assets.slice(i,i+30);let data=await lookupPrices(batch);Object.assign(prices,data.prices);if(data.errors?.length){const missing=batch.filter(a=>!data.prices[a.chain+':'+a.asset]);if(missing.length){const r=await fetch('/api/prices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assets:missing})});if(r.ok){const fallback=await r.json();Object.assign(prices,fallback.prices);failed ||= !!fallback.errors?.length}else failed=true}}}}catch{failed=true}finally{priceBusy=false;$('priceStatus').textContent=(failed?'部分缺价 · ':'')+'报价 '+new Date().toLocaleTimeString('zh-CN');render()}}
-let saveQueue=Promise.resolve();
-function save(){const key=walletStorage(),snapshot=structuredClone(state);try{localStorage.setItem('rebate-wallets-v1',JSON.stringify({evm:EVM,sol:SOL}))}catch{storageWarn='无法保存钱包设置'}saveQueue=saveQueue.catch(()=>{}).then(async()=>{await writeHistory(key,snapshot);try{localStorage.removeItem(key);const legacy=JSON.parse(localStorage.getItem('rebate-ledger-v1')||'null');if(legacy?.records?.length&&legacy.records.every(r=>r.stream==='discovery'||[r.from,r.to].some(a=>r.chain==='solana'?a===SOL:a?.toLowerCase()===EVM)))localStorage.removeItem('rebate-ledger-v1')}catch{}}).catch(()=>{storageWarn='历史保存失败，请立即导出历史备份';throw Error(storageWarn)});saveQueue.catch(()=>{});return saveQueue}
-function toast(s){$('toast').textContent=s;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',6000)}
-const statusText={unpaid:'未返还',partial:'返还不足',settled:'已返足够',over:'返还超额'};
-function badge(s){return `<span class="pill ${s==='over'?'red':s==='settled'?'':'amber'}">${statusText[s]||esc(s)}</span>`}
-function link(r){const c=chainBy(r.chain);return c.explorer?`${c.explorer.replace(/\/$/,'')}/${r.chain==='196'?'tx/':'tx/'}${encodeURIComponent(r.hash)}`:''}
-function matches(r){const q=$('search').value.trim().toLowerCase();return (!['review','spam'].includes(view)||allows('directionFilter',r.direction))&&allows('chainFilter',r.chain)&&allows('tokenFilter',r.chain+':'+r.asset)&&allows('assetFilter',r.asset==='native'?'native':'token')&&(!q||[r.trader,r.from,r.to,r.hash,r.symbol,r.asset].some(s=>s?.toLowerCase().includes(q)))}
-function statusMatches(g){const vs=selectedValues('statusFilter');return !vs.length||vs.includes(g.status)||vs.includes('outstanding')&&['unpaid','partial'].includes(g.status)}
-function complete(id){return state.coverage[id]?.status==='complete'}
-function render(){$('evmDisplay').textContent=EVM||'尚未设置';$('solDisplay').textContent=SOL||'尚未设置';let groups;try{groups=valued()}catch(e){toast(e.message);groups=[]}const pending=pendingReview(state.records),spam=spamRecords(state.records),done=required.filter(complete).length;$('reviewCount').textContent=pending.length;$('recheckPending').hidden=view!=='review';$('recheckPending').disabled=busy;$('recheckResults').hidden=!state.lastRecheck;$('recheckResults').disabled=busy;$('spamCount').textContent=spam.length;$('minimumUsd').closest('label').hidden=$('minimumField').hidden=['review','spam'].includes(view);const tokenSelection=selectedValues('tokenFilter');const tokenOptions=new Map(state.records.filter(r=>r.kind!=='ignore').map(r=>[r.chain+':'+r.asset,r]));$('tokenFilter').innerHTML='<option value="all">全部币种 / 合约</option>'+[...tokenOptions].sort((a,b)=>a[1].symbol.localeCompare(b[1].symbol)).map(([k,r])=>`<option value="${esc(k)}">${esc(r.symbol)} · ${esc(chainBy(r.chain).name)} · ${r.asset==='native'?'原生':short(r.asset)}</option>`).join('');for(const o of $('tokenFilter').options)o.selected=tokenSelection.includes(o.value);drawFilterMenus();const outstanding=groups.filter(g=>['unpaid','partial'].includes(g.status)),missing=outstanding.filter(g=>!g.priced).length,quoted=outstanding.filter(g=>g.priced),due=quoted.reduce((n,g)=>n+g.usdRemaining,0),addressCount=new Set(outstanding.map(g=>(g.chain==='solana'?'sol:':'evm:')+g.trader)).size;const heroValue=(!state.records.length||missing&&!quoted.length)?'—':due.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});const [whole,fraction]=heroValue.split('.');$('heroAmount').innerHTML=`${missing&&quoted.length?'<span class="estimate">≥</span>':''}${whole}${fraction?`<span class="fraction">.${fraction}</span>`:''}`;$('heroDetail').textContent=missing?`${missing} 项资产缺少报价，未计入此金额`:state.records.length?'稳定币按 1 USD · 其余按最新价 · 小额结清项已剔除':'同步历史后，按地址汇总待返金额';$('metrics').innerHTML=[['待返还地址',addressCount],['待核对流水',pending.length],['已扫描网络',`${done}<small> / ${required.length}</small>`]].map(([label,note],i)=>`<article><span class="metricindex">0${i+1}</span><div><p>${label}</p><strong>${note}</strong></div></article>`).join('');$('updated').textContent=state.updated?'更新 '+new Date(state.updated).toLocaleString('zh-CN'):'尚未同步';$('notice').innerHTML=busy?`<div class="progressline"></div>${esc(progress)}`:esc(storageWarn||(done<required.length?`历史扫描 ${done}/${required.length} · 账目持续更新`:(pending.length?'历史扫描完成 · '+pending.length+' 笔待核对':'历史扫描完成')));$('syncButton').textContent=busy?'暂停同步':'同步历史';$('setupButton').disabled=$('retryButton').disabled=busy;let rows=[],headers=[];
-if(view==='ledger'){
-const displayed=visibleGroups(groups),addresses=byAddress(displayed),totals=addressTotals(displayed);
-headers=['币种','应返','已返','差额','状态',''];
-rows=addresses.map(a=>{const t=totals.get((a.assets[0].chain==='solana'?'sol:':'evm:')+a.address);return `<tr class="addresshead"><td colspan="6"><div class="addressbar"><button class="addresscopy mono" data-copy="${esc(a.address)}" title="${esc(a.address)} · 点击复制">${esc(short(a.address))}<span>⧉</span></button><div class="addresssummary"><span>应返 <b>${usd(t.due)}</b></span><span>已返 <b>${usd(t.paid)}</b></span><span>待返 <b class="amount">${usd(t.remaining)}</b></span><span>超返 <b>${usd(t.excess)}</b></span>${t.missing?`<span class="missingquote" title="${t.missing} 项币种暂无可靠报价，未计入 U 总额">部分缺价</span>`:''}</div></div></td></tr>`+a.assets.map(g=>{const net=BigInt(g.due)-BigInt(g.paid);const amount=(raw,value)=>`<span class="quantity" title="${format(raw,g.decimals)}">${format(raw,g.decimals)}</span><span class="cellsub">${g.priced?usd(value):'—'}</span>`;return `<tr><td>${currency(g)}</td><td class="num">${amount(g.due,g.usdDue)}</td><td class="num">${amount(g.paid,g.usdPaid)}</td><td class="num ${net<0n?'warning':'amount'}">${amount(net,g.usdDue-g.usdPaid)}</td><td><span title="${g.withinTolerance?'差额小于 '+preferences.threshold+' U；':''}${complete(g.chain)?'历史已扫描':'历史扫描未完成'}">${badge(g.status)}</span></td><td><button class="secondary small" data-group="${esc(g.key)}">明细</button></td></tr>`}).join('')});
+import {
+  revokedAsset,
+  upgradeAllowlist,
+  normalizeAllowlist,
+  parseAllowlist,
+  formatAllowlist,
+  configureAssetAllowlist,
+} from "./allowlist.mjs";
+import {
+  RECHECK_REVISION,
+  planRecheck,
+  recheckOutcome,
+  pendingCounts,
+} from "./recheck.mjs";
+import { readHistory, writeHistory, storageDiagnostics } from "./storage.mjs";
+import {
+  EVM,
+  SOL,
+  configureWallets,
+  format,
+  validAddress,
+  decisionsFromLegacy,
+} from "./ledger.mjs";
+import { lookupPrices } from "./prices.mjs";
+import { valueGroups, addressTotals } from "./valuation.mjs";
+import {
+  COMMON_CHAINS,
+  EXTRA_CHAINS,
+  providerFor,
+  credentialFields,
+  emptyKeys,
+} from "./catalog.mjs";
+import {
+  createViewModel,
+  matchesFilters,
+  visibleGroups,
+  sortAddresses,
+  pageItems,
+  coverageSummary,
+} from "./view-model.mjs";
+import { createSaver } from "./persistence.mjs";
+import { runSync, RecordIndex } from "./sync-controller.mjs";
+import {
+  validateState,
+  validateRecord,
+  validateRecheckReport,
+} from "./validation.mjs";
+import { encodeCsv } from "./csv.mjs";
+import { networkDiagnostics } from "./network.mjs";
 
-}
-if(view==='assets'){const assets=new Map;for(const g of visibleGroups(groups)){const key=g.chain+':'+g.asset;if(!assets.has(key))assets.set(key,{...g,due:0n,paid:0n,remaining:0n,excess:0n,addresses:new Set});const a=assets.get(key);for(const k of ['due','paid','remaining','excess'])a[k]+=BigInt(g[k]);a.addresses.add(g.trader)}headers=['网络 / 币种','被邀请地址数','应返还合计','已返还合计','待返还合计','超返合计'];rows=[...assets.values()].map(a=>`<tr><td>${currency(a)}</td><td class="num">${a.addresses.size}</td>${['due','paid','remaining','excess'].map(k=>`<td class="num ${k==='remaining'?'amount':''}">${format(a[k],a.decimals)}<span class="cellsub">${a.priced?usd(Number(a[k])/10**a.decimals*Number(a.price.usd)):'暂无报价'}</span></td>`).join('')}</tr>`)}
-
-if(['review','spam'].includes(view)){
-headers=['时间 / 币种','方向','金额','日志来源 / 去向',view==='spam'?'隔离原因':'待核对原因','交易',''];
-rows=(view==='spam'?spam:pending).filter(matches).sort((a,b)=>(b.time||'').localeCompare(a.time||'')).map(r=>{const counterparty=r.direction==='in'?r.from:r.to;return `<tr><td>${currency(r)}<span class="cellsub">${r.time?esc(new Date(r.time).toLocaleString('zh-CN')):'时间待查询'}</span></td><td>${r.direction==='in'?'转入日志':'转出日志'}</td><td class="num"><span class="quantity" title="${format(r.raw,r.decimals)}">${format(r.raw,r.decimals)}</span></td><td><button class="addresscopy mono" data-copy="${esc(counterparty)}" title="${esc(counterparty)}">${esc(short(counterparty))}</button><span class="cellsub">${r.direction==='in'?'转账来源 · 非归属地址':'日志接收地址'}</span></td><td class="reviewreason">${esc(r.spamReason||r.reviewReason||r.exclusionReason||'归属尚未确认')}</td><td><a class="mono" href="${esc(link(r))}" target="_blank" rel="noreferrer" title="${esc(r.hash)}">${esc(short(r.hash))} ↗</a></td><td><div class="actions">${view==='spam'?`<button class="secondary small" data-restore="${esc(r.id)}">加入白名单</button>`:''}<button class="secondary small" data-record="${esc(r.id)}">明细</button><button class="secondary small" data-case="${esc(r.id)}">复制案例</button></div></td></tr>`});
-}
-if(view==='coverage'){const ids=[...new Set([...required,...state.selected])];$('tableArea').innerHTML=`<div class="coveragegrid">${ids.map(id=>{const c=chainBy(id),v=state.coverage[id],n=state.records.filter(r=>r.chain===id&&r.kind!=='ignore').length;return `<div class="coveragecard"><strong>${esc(c.name)}</strong><br><span class="pill ${complete(id)?'':c.unsupported?'red':'amber'}">${complete(id)?'历史已扫描':c.unsupported?'待接入补充数据源':v?.status==='error'?'同步未完成':v?.status==='running'?'同步中':'尚未扫描'}</span><p>${n} 笔已获取 · 原生 ${esc(c.symbol)} + 代币</p><p>${pending.filter(r=>r.chain===id).length} 笔待核对</p><p>${esc(v?.error||v?.updated&&new Date(v.updated).toLocaleString('zh-CN')||'尚未查询完整历史')}</p><button class="secondary small" data-sync-chain="${id}" ${busy?'disabled':''}>查询此链</button></div>`}).join('')}</div>`;$('rowCount').textContent=`指定范围 ${required.length} 条链；失败、未查询和未匹配记录不等于零欠款`;$('prev').disabled=$('next').disabled=true;$('pageNum').textContent='';return}
-const total=rows.length,max=Math.max(1,Math.ceil(total/25));page=Math.min(page,max);$('tableArea').dataset.view=view;$('tableArea').innerHTML=`<table><thead><tr>${headers.map((h,i)=>`<th${(view==='ledger'?[1,2,3]:view==='assets'?[1,2,3,4,5]:[2]).includes(i)?' class="num"':''}>${h}</th>`).join('')}</tr></thead><tbody>${rows.slice((page-1)*25,page*25).join('')||`<tr><td colspan="${headers.length}" class="empty"><h3>${['review','spam'].includes(view)?(view==='spam'?'没有疑似垃圾记录':'没有匹配的待核对流水'):'当前没有匹配的已识别账目'}</h3><p class="subtle">调整筛选，或先同步数据以自动识别返佣与返还。</p></td></tr>`}</tbody></table>`;document.querySelectorAll('#tableArea tbody tr:not(.addresshead)').forEach(tr=>[...tr.cells].forEach((td,i)=>td.dataset.label=headers[i]||''));$('rowCount').textContent=`${total} ${view==='ledger'?'个地址':['review','spam'].includes(view)?(view==='spam'?'笔疑似垃圾':'笔待核对'):'项'}`;$('pageNum').textContent=`${page} / ${max}`;$('prev').disabled=page<=1;$('next').disabled=page>=max;}
-function currency(r){const quote=r.priced?`1 ${r.symbol} ≈ ${usd(r.price.usd)} · ${r.price.source} · ${new Date(r.price.at).toLocaleTimeString('zh-CN')}`:'暂无可靠报价';return `<div class="currency" title="${esc((r.asset==='native'?'原生币':r.asset)+' · '+quote)}"><div>${esc(r.symbol)}<span class="cellsub">${esc(chainBy(r.chain).name)} · ${r.asset==='native'?'原生币':esc(short(r.asset))}</span></div></div>`}
-
-function settings(){$('assetAllowlist').value=formatAllowlist(assetAllowlist);$('evmWallet').value=EVM;$('solWallet').value=SOL;$('toleranceEnabled').checked=preferences.enabled;$('toleranceValue').value=preferences.threshold;drawChoices();$('settings').showModal()}
-function drawChoices(){const q=$('chainSearch').value.toLowerCase();$('chainChoices').innerHTML=chains.filter(c=>(c.name+' '+c.id).toLowerCase().includes(q)).sort((a,b)=>Number(required.includes(b.id))-Number(required.includes(a.id))).map(c=>`<label><input type="checkbox" data-chain="${c.id}" ${state.selected.includes(c.id)?'checked':''} ${c.unsupported?'disabled':''}>${esc(c.name)}${c.unsupported?'（待接入）':''}</label>`).join('')}
-function showRecords(ids){activeDetail=ids;const records=autoAccount(state.records).filter(r=>ids.includes(r.id));$('detailBody').innerHTML=records.map(r=>`<article class="record"><p><strong>${r.kind==='commission'?'返佣收入':r.kind==='refund'?'已返还':r.kind==='pending'?(r.spam?'疑似垃圾':'待核对'):'未计入'} · ${esc(chainBy(r.chain).name)}</strong><span class="pill" style="float:right">${format(r.raw,r.decimals)} ${esc(r.symbol)}</span></p><p class="mono">${['commission','refund'].includes(r.kind)?'被邀请地址':'归属待确认'}：${esc(['commission','refund'].includes(r.kind)||r.attributionVerified?r.trader:'尚未确认')}</p><p class="mono">交易：${esc(r.hash)}</p><p class="mono">合约：${esc(r.asset)}<br>交易发起人：${esc(r.txSender||'尚未核验')}</p><p class="mono">日志发送：${esc(r.from)}<br>到：${esc(r.to)}</p><p class="evidence">${esc(r.spamReason||r.reviewReason||r.exclusionReason||r.evidence)}</p>${link(r)?`<a href="${esc(link(r))}" rel="noreferrer" target="_blank">查看链上交易 ↗</a>`:''}</article>`).join('');if(!$('detail').open)$('detail').showModal()}
-const recheckLabels={queued:'等待处理',missing:'缺少凭证',failed:'请求失败',resolved:'已解决',partial:'部分解决',unresolved:'仍待核对',cancelled:'未处理'};
-function showRecheckReport(){
- const report=state.lastRecheck;if(!report?.entries)return toast('尚无重核结果');
- const filter=$('recheckResultFilter').value,entries=report.entries.filter(e=>filter==='all'||(filter==='unresolved'?['unresolved','partial'].includes(e.status):filter==='cancelled'?['cancelled','queued'].includes(e.status):e.status===filter));
- const count=status=>report.entries.filter(e=>e.status===status).length;
- $('recheckSummary').textContent=`范围 ${report.before} / ${report.total??report.before} 条流水 → ${report.entries.length} 笔交易 · 已解决 ${count('resolved')} · 部分解决 ${count('partial')} · 仍待核对 ${count('unresolved')} · 失败 ${count('failed')} · 缺凭证 ${count('missing')} · 未处理 ${count('queued')+count('cancelled')}`;
- $('recheckRows').innerHTML=entries.map(e=>`<tr><td>${esc(chainBy(e.chain).name)}<br><a class="mono" href="${esc(link(e))}" target="_blank" rel="noreferrer">${esc(short(e.hash))} ↗</a></td><td>${esc(recheckLabels[e.status])}<span class="cellsub">待核对 ${e.before} → ${e.after} 条</span></td><td>${esc(e.error||(['unresolved','partial'].includes(e.status)?'接口返回正常，但归属凭证仍不足':'已按当前识别规则处理'))}</td><td><button class="secondary small" data-recheck-detail="${esc(e.key)}">明细</button></td></tr>`).join('');
- $('retryRecheckFailures').disabled=busy||!report.entries.some(e=>['failed','missing','cancelled','queued'].includes(e.status));
- if(!$('recheckReport').open)$('recheckReport').showModal();
-}
-$('recheckResults').onclick=showRecheckReport;$('recheckResultFilter').onchange=showRecheckReport;
-$('recheckRows').onclick=e=>{const b=e.target.closest('[data-recheck-detail]');if(b)showRecords(state.records.filter(r=>r.chain+':'+r.hash===b.dataset.recheckDetail).map(r=>r.id))};
-$('retryRecheckFailures').onclick=()=>{const keys=new Set(state.lastRecheck.entries.filter(e=>['failed','missing','cancelled','queued'].includes(e.status)).map(e=>e.key));$('recheckReport').close();recheckPending(keys)};
-$('exportRecheckResults').onclick=()=>download('重核结果.json',JSON.stringify(state.lastRecheck,null,2));
-async function recheckPending(retryKeys=null){
- if(busy)return;
- const candidates=pendingReview(state.records).filter(r=>retryKeys?retryKeys.has(r.chain+':'+r.hash):matches(r));
- const {entries,jobs}=planRecheck(candidates,state.records,chainBy,keys);
- if(!entries.length)return toast('当前范围没有待核对流水');
- state.lastRecheck={started:new Date().toISOString(),before:candidates.length,total:pendingReview(state.records).length,entries};
- state.recheckCache||={};
- const byTx=new Map(jobs.map(j=>[j.key,j.rows]));
- await save();
- if(!jobs.length){render();return showRecheckReport()}
- let worker;try{worker=new Worker(new URL('./recheck-worker.mjs',import.meta.url),{type:'module'})}catch{for(const e of entries)if(e.status==='queued'){e.status='cancelled';e.error='无法启动核验线程'}await save();render();return showRecheckReport()}
- busy=true;controller=new AbortController;let checked=0,failed=0,buffer=[],lastFlush=Date.now(),flushQueue=Promise.resolve(),fatal='',finished=false;
- const started=Date.now();
- const updateProgress=()=>{const seconds=Math.max(1,(Date.now()-started)/1000);progress=`重核 ${checked+failed}/${jobs.length} 笔交易 · ${((checked+failed)*60/seconds).toFixed(1)} 笔/分钟 · 请求失败 ${failed} · 范围 ${candidates.length} 条流水${document.hidden?' · 后台运行，系统休眠可能暂停':''}`;};
- const flush=()=>{const batch=buffer.splice(0);if(!batch.length)return flushQueue;lastFlush=Date.now();
-  const replacements=[];for(const r of batch){const cov=state.coverage[r.chain]||={streams:{},inspected:[]};cov.inspected||=[];cov.inspectionErrors||={};
-   if(r.error){cov.inspectionErrors[r.hash]=r.error;cov.inspected=cov.inspected.filter(h=>h!==r.hash);for(const row of byTx.get(r.key)||[])replacements.push({...row,inspectionError:r.error})}
-   else{replacements.push(...r.rows.map(row=>{const clean={...row};delete clean.inspectionError;return clean}));if(!cov.inspected.includes(r.hash))cov.inspected.push(r.hash);delete cov.inspectionErrors[r.hash];state.recheckCache[r.key]={revision:RECHECK_REVISION,fingerprint:r.fingerprint};}
+const $ = (id) => document.getElementById(id);
+const esc = (value) =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+const short = (value) =>
+  value?.length > 20 ? value.slice(0, 8) + "…" + value.slice(-6) : value || "—";
+const usd = (value) =>
+  Number.isFinite(Number(value))
+    ? Number(value).toLocaleString("en-US", { maximumFractionDigits: 4 }) +
+      " USD"
+    : "—";
+const quantity = (raw, decimals) => {
+  const full = format(raw, decimals);
+  return full.length > 19
+    ? Number(full).toLocaleString("en-US", { maximumSignificantDigits: 10 })
+    : full;
+};
+const emptyState = () => ({
+  version: 1,
+  records: [],
+  decisions: {},
+  selected: [...COMMON_CHAINS],
+  coverage: {},
+  updated: null,
+  decoderVersion: 4,
+});
+const safeRead = (store, key, fallback) => {
+  try {
+    return JSON.parse(store.getItem(key) || "null") ?? fallback;
+  } catch {
+    return fallback;
   }
-  state.records=mergeRecords(state.records,replacements);state.updated=new Date().toISOString();
-  const pendingNow=pendingReview(state.records);for(const result of batch){const index=state.lastRecheck.entries.findIndex(e=>e.key===result.key);state.lastRecheck.entries[index]=recheckOutcome(state.lastRecheck.entries[index],pendingNow,result.error)}
-  flushQueue=flushQueue.then(()=>save());flushQueue.catch(()=>{});updateProgress();if(!document.hidden)render();return flushQueue;
- };
- const visibility=()=>{flush();updateProgress();if(!document.hidden)render()};
- const cancel=()=>worker.postMessage({type:'cancel'});
- controller.signal.addEventListener('abort',cancel,{once:true});document.addEventListener('visibilitychange',visibility);
- updateProgress();render();
- try{await new Promise((resolve,reject)=>{
-  worker.onmessage=({data})=>{if(data.type==='result'){if(data.error)failed++;else checked++;buffer.push(data);if(buffer.length>=10||Date.now()-lastFlush>=3000)flush().catch(reject)}else if(data.type==='done'){finished=true;resolve()}else if(data.type==='fatal')reject(Error(data.error))};
-  worker.onerror=e=>reject(Error(e.message||'核验线程异常退出'));
-  worker.postMessage({type:'start',jobs,keys,routers,wallets:{evm:EVM,sol:SOL}});
- });await flush();await flushQueue;}catch(e){fatal=e.message;try{await flush()}catch{}}finally{
-  worker.terminate();document.removeEventListener('visibilitychange',visibility);controller.signal.removeEventListener('abort',cancel);
-  for(const entry of state.lastRecheck.entries)if(entry.status==='queued'){entry.status='cancelled';entry.error=fatal||'任务已暂停，可重试未处理项'}
-  const finalPending=pendingReview(state.records);state.lastRecheck.entries=state.lastRecheck.entries.map(e=>['resolved','partial','unresolved','failed'].includes(e.status)?recheckOutcome(e,finalPending,e.error):e);
-  state.lastRecheck.finished=new Date().toISOString();busy=false;progress='';
-  try{await save()}catch(e){storageWarn=e.message}
-  render();refreshPrices();showRecheckReport();
-
- }
+};
+const [catalog, routers, defaultAllowlist] = await Promise.all(
+  ["chains.json", "routers.json", "asset-allowlist.json"].map((f) =>
+    fetch(new URL("./" + f, import.meta.url)).then((r) => {
+      if (!r.ok) throw Error("无法载入应用资源，请联网刷新");
+      return r.json();
+    }),
+  ),
+);
+const chains = [...catalog, ...EXTRA_CHAINS].map((c) => ({
+  ...c,
+  name: c.name.trim(),
+}));
+const chainMap = new Map(chains.map((c) => [c.id, c]));
+const chainBy = (id) => chainMap.get(id) || { id, name: id, explorer: "" };
+let state = emptyState(),
+  busy = false,
+  controller,
+  view = "ledger",
+  page = 1,
+  reportPage = 1,
+  progress = "",
+  storageWarn = "";
+let policyVersion = 0,
+  prices = {},
+  priceBusy = false,
+  renderTimer,
+  activeRecordIds = [],
+  settingsDraft = [],
+  importCandidate,
+  importWallet;
+let scanOptions = safeRead(localStorage, "rebate-scan-options-v1", {});
+let preferences = {
+  enabled: true,
+  threshold: "0.1",
+  ...safeRead(localStorage, "rebate-preferences-v1", {}),
+};
+let credentialMode = localStorage.getItem("rebate-credential-mode") || "local";
+let keys = {
+  ...emptyKeys(),
+  ...safeRead(
+    credentialMode === "session" ? sessionStorage : localStorage,
+    "rebate-credentials-v1",
+    {},
+  ),
+};
+const wallets = safeRead(localStorage, "rebate-wallets-v1", {
+  evm: "",
+  sol: "",
+});
+try {
+  configureWallets(wallets.evm, wallets.sol);
+} catch {
+  configureWallets("", "");
+  storageWarn = "钱包设置无法读取，请重新设置";
 }
-$('recheckPending').onclick=()=>recheckPending();
-async function sync(onlyId,retryOnly=false){if(busy){controller.abort();return}const selected=state.selected.filter(id=>(!onlyId||id===onlyId)&&(!retryOnly||!complete(id))&&!chainBy(id).unsupported&&(id==='solana'?SOL&&keys.helius:EVM&&keys[chainBy(id).provider||'blockscout'])).sort((a,b)=>Number(['56','196'].includes(a))-Number(['56','196'].includes(b)));if(!selected.length){settings();return toast('填写对应 API Key 后点击“应用设置”，再同步历史')}busy=true;controller=new AbortController;render();let errors=0;const lanes=Object.groupBy(selected,id=>id==='solana'?'helius':chainBy(id).provider||'blockscout:'+id);try{await Promise.all(Object.values(lanes).map(async ids=>{for(const id of ids){if(controller.signal.aborted)break;const c=chainBy(id);let cov=state.coverage[id]||{streams:{},inspected:[]};if(cov.status==='complete')cov={...cov,streams:incrementalStreams(cov.streams,state.records.filter(r=>r.chain===id))};cov.inspected||=[];cov.inspectionErrors||={};cov.status='running';cov.error='';state.coverage[id]=cov;const onPage=async(rows,p)=>{const known=new Set(state.records.map(r=>r.id)),newRows=rows.filter(r=>!known.has(r.id));if(!c.provider&&newRows.length){const changed=new Set(newRows.map(r=>r.hash));cov.inspected=cov.inspected.filter(h=>!changed.has(h))}state.records=mergeRecords(state.records,newRows);if(c.provider){for(const hash of [...new Set(rows.map(r=>r.hash))]){if(cov.inspected.includes(hash))continue;progress=`${c.name} · 核验新获取的交易与返佣`;render();try{const checked=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,checked);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}cov.streams[p.stream]=p;state.updated=new Date().toISOString();await save();render()};const onProgress=s=>{progress=s;render()};try{if(id==='solana'){await scanSolana(keys.helius,onPage,onProgress,controller.signal,cov.streams.solana||{})}else if(c.provider){for(const hash of Object.keys(cov.inspectionErrors)){if(controller.signal.aborted)throw Error('已暂停');onProgress(`${c.name} · 重试此前未能核验的交易`);try{const rows=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,rows);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}const scanner={nodereal:scanBSC,etherscan:scanLinea,xlayer:scanXLayer}[c.provider];await scanner(c,keys[c.provider],onPage,onProgress,controller.signal,cov.streams);const hashes=[...new Set(state.records.filter(r=>r.chain===id&&r.stream==='discovery').map(r=>r.hash))];for(let i=0;i<hashes.length;i++){const hash=hashes[i];if(cov.inspected.includes(hash))continue;onProgress(`${c.name} · 核验成功回执与内部转账 ${i+1}/${hashes.length}`);try{const rows=await inspectorFor(c)(c,hash,keys[c.provider],routers,controller.signal);state.records=mergeRecords(state.records,rows);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}else{await scanEVM(c,keys.blockscout,routers,onPage,onProgress,controller.signal,cov.streams);const records=state.records.filter(r=>r.chain===id&&r.stream),hashes=[...new Set(records.map(r=>r.hash))];for(let i=0;i<hashes.length;i++){const hash=hashes[i];if(cov.inspected.includes(hash))continue;onProgress(`${c.name} · 核验交易与返佣事件 ${i+1}/${hashes.length}`);try{const result=await inspectEVM(c,hash,keys.blockscout,routers,records.filter(r=>r.hash===hash),controller.signal);state.records=mergeRecords(state.records,[...result.replace,...result.fees]);cov.inspected.push(hash);delete cov.inspectionErrors[hash]}catch(e){if(controller.signal.aborted)throw e;cov.inspectionErrors[hash]=e.message;for(const r of state.records)if(r.chain===id&&r.hash===hash)r.inspectionError=e.message}save();render()}}if(Object.keys(cov.inspectionErrors).length)throw Error(`${Object.keys(cov.inspectionErrors).length} 笔交易尚未核验：${Object.values(cov.inspectionErrors)[0]}`);cov.status='complete';cov.updated=new Date().toISOString()}catch(e){cov.status='error';cov.error=controller.signal.aborted?'已暂停；下次从保存的进度继续':e.message;errors++}save();render()}}))}finally{busy=false;progress='';save();render();toast(controller.signal.aborted?'同步已暂停，进度已保存':errors?`${errors} 条链未完成，可查看“数据覆盖”后重试`:'所选网络扫描完成，账目已自动汇总')}}
-function download(filename,content,type='application/json'){const blob=new Blob([content],{type}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
-function backup(){download('钱包历史-'+(EVM||SOL).slice(0,10)+'-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(historyBackup(state,{evm:EVM,sol:SOL})));toast('已导出历史和扫描进度，不含 API Key')}
-function exportCsv(){if(['review','spam'].includes(view)){const header=['网络','方向','代币','合约','金额','发送地址','接收地址','候选归属地址','交易哈希','时间','待核对原因'];const rows=(view==='spam'?spamRecords(state.records):pendingReview(state.records)).filter(matches).map(r=>[chainBy(r.chain).name,r.direction==='in'?'转入日志':'转出日志',r.symbol,r.asset,format(r.raw,r.decimals),r.from,r.to,r.trader||r.suggestedTrader||'',r.hash,r.time,r.spamReason||r.reviewReason||r.exclusionReason||'归属尚未确认']);const cell=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';download(view==='spam'?'疑似垃圾记录.csv':'待核对流水.csv','\uFEFF'+[header,...rows].map(r=>r.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8');return}const header=['网络','被邀请地址','代币','合约或原生币','应返还','已返还','待返还','超返','状态','差额参考价值U','是否小额足额','报价时间','历史是否查完'];const rows=visibleGroups(valued()).sort((a,b)=>a.trader.localeCompare(b.trader)).map(g=>[chainBy(g.chain).name,g.trader,g.symbol,g.asset,format(g.due,g.decimals),format(g.paid,g.decimals),format(g.remaining,g.decimals),format(g.excess,g.decimals),statusText[g.status],g.priced?g.usdDifference:'暂无报价',g.withinTolerance?'是':'否',g.priced?new Date(g.price.at).toISOString():'',complete(g.chain)?'是':'否']);const safe=v=>'"'+String(v).replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';download('返佣对账-'+new Date().toISOString().slice(0,10)+'.csv','\uFEFF'+[header,...rows].map(r=>r.map(safe).join(',')).join('\r\n'),'text/csv;charset=utf-8')}
-$('chainFilter').innerHTML='<option value="all">所有网络</option>'+chains.filter(c=>required.includes(c.id)||state.records.some(r=>r.chain===c.id)).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');$('setupButton').onclick=settings;$('saveSettings').onclick=async()=>{let nextAllowlist;try{nextAllowlist=parseAllowlist($('assetAllowlist').value)}catch(e){return toast(e.message)};const evm=$('evmWallet').value.trim().toLowerCase(),sol=$('solWallet').value.trim(),threshold=$('toleranceValue').value;if(evm&&!validAddress('1',evm)||sol&&!validAddress('solana',sol))return toast('钱包地址格式不正确');if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(threshold)||Number(threshold)>1000000)return toast('请填写有效差额阈值');try{updateAllowlist(nextAllowlist)}catch(e){return toast('白名单保存失败：'+e.message)};preferences={enabled:$('toleranceEnabled').checked,threshold};localStorage.setItem('rebate-preferences-v1',JSON.stringify(preferences));const chosenNetworks=[...state.selected];if(evm!==EVM||sol!==SOL){await save();configureWallets(evm,sol);try{state=await readHistory(walletStorage())||JSON.parse(localStorage.getItem(walletStorage())||'null')||{version:1,records:[],selected:required,coverage:{},updated:null}}catch{state={version:1,records:[],selected:required,coverage:{},updated:null}}migrateDecoder();prices={}}state.selected=chosenNetworks;const xlayer={key:$('xlayerKey').value.trim(),secret:$('xlayerSecret').value.trim(),passphrase:$('xlayerPassphrase').value.trim()};if(Object.values(xlayer).some(Boolean)&&!Object.values(xlayer).every(Boolean))return toast('X Layer 需要同时填写 API Key、Secret Key 和 Passphrase');keys={blockscout:$('blockscoutKey').value.trim(),helius:$('heliusKey').value.trim(),nodereal:$('noderealKey').value.trim(),etherscan:$('etherscanKey').value.trim(),xlayer:Object.values(xlayer).every(Boolean)?xlayer:null};try{localStorage.setItem('rebate-credentials-v1',JSON.stringify(keys))}catch{return toast('浏览器不允许保存凭证；本次仍可使用，请检查存储设置')}try{await save()}catch(e){return toast(e.message)}navigator.storage?.persist?.().catch(()=>{});render();refreshPrices();$('settings').close();toast('凭证和网络选择已保存到本机，刷新后自动恢复')};$('chainSearch').oninput=drawChoices;$('chainChoices').onchange=e=>{const id=e.target.dataset.chain;if(!id)return;state.selected=e.target.checked?[...new Set([...state.selected,id])]:state.selected.filter(x=>x!==id)};$('selectAll').onclick=()=>{state.selected=chains.filter(c=>!/testnet/i.test(c.name)&&!c.unsupported).map(c=>c.id);drawChoices()};$('selectCommon').onclick=()=>{state.selected=[...required];drawChoices()};$('syncButton').onclick=()=>sync();$('retryButton').onclick=()=>sync(null,true);$('backupButton').onclick=backup;$('exportButton').onclick=exportCsv;$('prev').onclick=()=>{page--;render()};$('next').onclick=()=>{page++;render()};for(const id of ['search','chainFilter','statusFilter','assetFilter','tokenFilter','directionFilter','minimumUsd','minimumField'])$(id).addEventListener(id==='search'?'input':'change',()=>{page=1;render()});document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{view=b.dataset.tab;page=1;document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));$('statusFilter').disabled=!['ledger','assets'].includes(view);$('search').disabled=$('chainFilter').disabled=$('assetFilter').disabled=$('tokenFilter').disabled=view==='coverage';document.querySelector('.filters').hidden=view==='coverage';render()});$('tableArea').onclick=async e=>{const restore=e.target.closest('[data-restore]');if(restore){const r=state.records.find(r=>r.id===restore.dataset.restore);if(r){try{updateAllowlist([...assetAllowlist,{chain:r.chain,asset:r.asset}]);render();refreshPrices();toast('已加入该网络白名单，按原有凭证重新核对')}catch(e){toast(e.message)}}return}const copy=e.target.closest('[data-copy]');if(copy){try{await navigator.clipboard.writeText(copy.dataset.copy);toast('地址已复制')}catch{toast('复制失败，请在明细中复制地址')}return}const sample=e.target.closest('[data-case]');if(sample){const r=autoAccount(state.records).find(r=>r.id===sample.dataset.case);if(!r)return;const text=['待核对案例','网络：'+chainBy(r.chain).name,'方向：'+(r.direction==='in'?'转入日志':'转出日志'),'金额：'+format(r.raw,r.decimals)+' '+r.symbol,'币种合约：'+r.asset,'发送：'+r.from,'接收：'+r.to,'交易：'+r.hash,'链接：'+link(r),'原因：'+(r.spamReason||r.reviewReason||'归属尚未确认'),'实际用途（返佣 / 返还 / 其他）：','应归属的被邀请地址：'].join('\n');try{await navigator.clipboard.writeText(text);toast('案例已复制，可补充用途和归属地址后发给我')}catch{toast('复制失败，可打开明细复制交易哈希')}return}const sc=e.target.closest('[data-sync-chain]');if(sc){sync(sc.dataset.syncChain);return}const r=e.target.closest('[data-record]'),g=e.target.closest('[data-group]');if(r)showRecords([r.dataset.record]);if(g)showRecords(summarize(autoAccount(state.records)).find(x=>x.key===g.dataset.group).ids)};
-$('clearCredentials').onclick=()=>{localStorage.removeItem('rebate-credentials-v1');keys={blockscout:'',helius:'',nodereal:'',etherscan:'',xlayer:null};for(const id of [...Object.keys(credentialFields),'xlayerKey','xlayerSecret','xlayerPassphrase'])$(id).value='';toast('已清除本浏览器保存的凭证；账目保留')};
-$('refreshPrices').onclick=refreshPrices;
-$('resetFilters').onclick=()=>{$('search').value='';$('minimumUsd').value='0';for(const id of ['chainFilter','statusFilter','assetFilter','tokenFilter','directionFilter']){for(const o of $(id).options)o.selected=false}page=1;render()};
-$('importFile').onchange=async e=>{try{if(busy)throw Error('请先暂停同步');const f=e.target.files[0];if(!f)return;if(f.size>100*1024*1024)throw Error('备份超过 100MB');if(!EVM&&!SOL)throw Error('请先设置收款钱包');const data=JSON.parse(await f.text()),imported=restoreHistory(data,{evm:EVM,sol:SOL},validateRecord);if(data.format==='rebate-history'){
-// A backup is a consistent records+cursor snapshot. Keep newer local records but
-// prefer the local cursor when its whole scan is newer and complete.
-const local=state;state={...imported,records:mergeRecords(imported.records,local.records),selected:Array.isArray(imported.selected)&&imported.selected.length?imported.selected.filter(id=>chains.some(c=>c.id===id)):required};for(const[id,c]of Object.entries(local.coverage||{}))if(c.status==='complete'&&c.updated>(state.coverage[id]?.updated||''))state.coverage[id]=c;
-}else{state.records=mergeRecords(state.records,imported.records);state.coverage={}}migrateDecoder();await save();render();refreshPrices();toast('历史及进度已恢复，点击同步历史查询增量')}catch(e){toast(e.message)}finally{$('importFile').value=''}};
-$('exportSettings').onclick=()=>{const credentials=$('includeCredentials').checked?keys:undefined;download('返佣账本设置.json',JSON.stringify({format:'rebate-settings',version:1,wallets:{evm:EVM,sol:SOL},preferences,selected:state.selected,assetAllowlist,credentials},null,2));toast(credentials?'已导出设置，文件包含 API 凭证，请妥善保管':'已导出设置，不含 API 凭证')};
-$('importSettings').onchange=async e=>{try{if(busy)throw Error('请先暂停同步');const f=e.target.files[0];if(!f)return;if(f.size>2*1024*1024)throw Error('设置文件过大');const d=JSON.parse(await f.text());if(d.format!=='rebate-settings'||d.version!==1||!d.wallets)throw Error('不是有效的设置备份');const evm=d.wallets.evm||'',sol=d.wallets.sol||'';if(evm&&!validAddress('1',evm)||sol&&!validAddress('solana',sol))throw Error('钱包地址格式错误');if(d.assetAllowlist!==undefined)$('assetAllowlist').value=formatAllowlist(normalizeAllowlist(d.assetAllowlist));$('evmWallet').value=evm;$('solWallet').value=sol;$('toleranceEnabled').checked=d.preferences?.enabled!==false;$('toleranceValue').value=d.preferences?.threshold??'0.1';if(Array.isArray(d.selected))state.selected=d.selected.filter(id=>chains.some(c=>c.id===id));if(d.credentials){for(const[id,k]of Object.entries(credentialFields))$(id).value=typeof d.credentials[k]==='string'?d.credentials[k]:'';for(const[id,k]of [['xlayerKey','key'],['xlayerSecret','secret'],['xlayerPassphrase','passphrase']])$(id).value=d.credentials.xlayer?.[k]||''}drawChoices();toast('设置已填入，点击“保存到本机”生效')}catch(e){toast(e.message)}finally{$('importSettings').value=''}};
-if(document.modelContext?.registerTool){try{document.modelContext.registerTool({name:'read_rebate_ledger',title:'读取返佣核对结果',description:'读取当前浏览器已识别账目及查询覆盖范围，不触发链上操作。',inputSchema:{type:'object',properties:{chain:{type:'string'}},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute(input){if(!input||typeof input!=='object'||Object.keys(input).some(k=>k!=='chain')||input.chain!==undefined&&!chains.some(c=>c.id===input.chain))throw Error('无效网络参数');return {rows:summarize(autoAccount(state.records)).filter(r=>!input.chain||r.chain===input.chain),pending:pendingReview(state.records).length,coverage:state.coverage,updated:state.updated}}})}catch{}}
-try{await save()}catch{}
+const walletStorage = () => `rebate-ledger-wallet:${EVM}:${SOL}`;
+let assetAllowlist;
+try {
+  const policy = upgradeAllowlist(
+    safeRead(
+      localStorage,
+      "rebate-asset-allowlist-v2",
+      safeRead(localStorage, "rebate-asset-allowlist-v1", null),
+    ),
+    defaultAllowlist,
+  );
+  assetAllowlist = policy.assets;
+  localStorage.setItem("rebate-asset-allowlist-v2", JSON.stringify(policy));
+} catch {
+  assetAllowlist = normalizeAllowlist(defaultAllowlist);
+  storageWarn = "合约名单读取失败，已载入内置名单";
+}
+configureAssetAllowlist(assetAllowlist);
+try {
+  const saved =
+    (await readHistory(walletStorage())) ||
+    safeRead(localStorage, walletStorage(), null) ||
+    safeRead(localStorage, "rebate-ledger-v1", null);
+  if (saved)
+    state = validateState(saved, {
+      trustEvidence: true,
+      wallets: { evm: EVM, sol: SOL },
+    });
+} catch {
+  storageWarn = "本机历史读取失败，请从备份恢复。原数据未删除。";
+}
+function migrateState(target = state) {
+  target.decisions = {
+    ...decisionsFromLegacy(target.records),
+    ...target.decisions,
+  };
+  if (target.decoderVersion !== 4) {
+    // Only conclusions lacking current proof become pending. Cursor history is retained.
+    target.decoderVersion = 4;
+    target.migrationPending = true;
+    for (const coverage of Object.values(target.coverage))
+      coverage.inspected = [];
+    return true;
+  }
+  return false;
+}
+const migrated = migrateState();
+const derive = createViewModel();
+const model = () => derive(state.records, state.decisions, policyVersion);
+const saver = createSaver(async (key, snapshot) => {
+  try {
+    await writeHistory(key, snapshot);
+    storageWarn = "";
+  } catch (error) {
+    storageWarn = "历史保存失败，请立即导出备份";
+    toast(storageWarn);
+    throw error;
+  }
+});
+function save(flush = false) {
+  const owner = state;
+  saver.queue(walletStorage(), () => owner);
+  return flush ? saver.flush() : Promise.resolve();
+}
+function toast(message) {
+  $("toast").textContent = message;
+  $("toast").style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => ($("toast").style.display = "none"), 6000);
+}
+function scheduleRender() {
+  if (document.hidden) return;
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 100);
+}
+function setProgress(text) {
+  progress = text;
+  $("notice").textContent = text;
+}
+function selectedValues(id) {
+  return [...$(id).selectedOptions]
+    .map((o) => o.value)
+    .filter((v) => v !== "all");
+}
+function filters() {
+  return {
+    search: $("search").value,
+    chains: new Set(selectedValues("chainFilter")),
+    statuses: new Set(selectedValues("statusFilter")),
+    direction: new Set(selectedValues("directionFilter")),
+    tokens: new Set(selectedValues("tokenFilter")),
+    types: new Set(selectedValues("assetFilter")),
+    minimum: $("minimumUsd").value,
+    minimumField: $("minimumField").value,
+  };
+}
+const statusText = {
+  unpaid: "未返还",
+  partial: "返还不足",
+  settled: "已结清",
+  over: "超额返还",
+};
+const rawViews = new Set(["review", "spam", "ignored"]);
+const badge = (g) =>
+  `<span class="pill ${g.status === "over" ? "red" : g.status === "settled" ? "" : "amber"}">${g.withinTolerance ? "小额差额已忽略" : statusText[g.status] || esc(g.status)}</span>`;
+const link = (r) => {
+  const explorer = chainBy(r.chain).explorer;
+  return explorer
+    ? `${explorer.replace(/\/$/, "")}/tx/${encodeURIComponent(r.hash)}`
+    : "";
+};
+const nowGroups = () => valueGroups(model().groups, prices, preferences);
+const filteredGroups = () => visibleGroups(nowGroups(), filters());
+const currency = (r) =>
+  `<div class="currency">${esc(r.symbol)}<span class="cellsub">${esc(chainBy(r.chain).name)} · ${r.asset === "native" ? "原生币" : esc(short(r.asset))}</span></div>`;
+let filterSignature = "",
+  restoredFilters = safeRead(localStorage, "rebate-filters-v2", null);
+function syncFilterOptions() {
+  const data = model(),
+    signature =
+      [...new Set([...COMMON_CHAINS, ...state.selected, ...data.chains])].join(
+        ",",
+      ) +
+      "|" +
+      [...data.assets.keys()].sort().join(",");
+  if (signature === filterSignature) return;
+  filterSignature = signature;
+  const oldChain = selectedValues("chainFilter"),
+    oldToken = selectedValues("tokenFilter");
+  $("chainFilter").innerHTML = [
+    ...new Set([...COMMON_CHAINS, ...state.selected, ...data.chains]),
+  ]
+    .filter((id) => chainMap.has(id))
+    .map((id) => `<option value="${esc(id)}">${esc(chainBy(id).name)}</option>`)
+    .join("");
+  $("tokenFilter").innerHTML = [...data.assets]
+    .sort((a, b) => a[1].symbol.localeCompare(b[1].symbol))
+    .map(
+      ([key, row]) =>
+        `<option value="${esc(key)}">${esc(row.symbol)} · ${esc(chainBy(row.chain).name)} · ${esc(short(row.asset))}</option>`,
+    )
+    .join("");
+  for (const [id, chosen] of [
+    ["chainFilter", oldChain],
+    ["tokenFilter", oldToken],
+  ])
+    for (const option of $(id).options)
+      option.selected = chosen.includes(option.value);
+  if (restoredFilters) {
+    for (const id of [
+      "chainFilter",
+      "tokenFilter",
+      "statusFilter",
+      "directionFilter",
+      "assetFilter",
+    ])
+      for (const o of $(id).options)
+        o.selected = restoredFilters[id]?.includes(o.value) || false;
+    for (const id of ["search", "minimumUsd", "minimumField", "sortBy"])
+      if (typeof restoredFilters[id] === "string")
+        $(id).value = restoredFilters[id];
+    restoredFilters = null;
+  }
+}
+function drawFilterMenus() {
+  for (const menu of document.querySelectorAll("[data-filter]")) {
+    const select = $(menu.dataset.filter),
+      body = menu.querySelector(".checkmenu");
+    const signature = [...select.options]
+      .map((o) => o.value + o.text)
+      .join("|");
+    if (body.dataset.signature !== signature) {
+      body.innerHTML = [...select.options]
+        .map(
+          (o) =>
+            `<label><input type="checkbox" value="${esc(o.value)}"><span>${esc(o.text)}</span></label>`,
+        )
+        .join("");
+      body.dataset.signature = signature;
+    }
+    const chosen = new Set(selectedValues(select.id)),
+      q = menu.querySelector(".optionsearch")?.value.toLowerCase() || "";
+    for (const input of body.querySelectorAll("input")) {
+      input.checked = chosen.has(input.value);
+      input.closest("label").hidden = !input
+        .closest("label")
+        .textContent.toLowerCase()
+        .includes(q);
+    }
+    menu.querySelector(".filtercount").textContent = chosen.size || "";
+    menu.classList.toggle("has-selection", chosen.size > 0);
+    menu.hidden =
+      (select.id === "directionFilter" && !rawViews.has(view)) ||
+      (select.id === "statusFilter" && rawViews.has(view));
+  }
+}
+function persistFilters() {
+  try {
+    localStorage.setItem(
+      "rebate-filters-v2",
+      JSON.stringify(
+        Object.fromEntries(
+          [
+            "chainFilter",
+            "statusFilter",
+            "directionFilter",
+            "tokenFilter",
+            "assetFilter",
+          ]
+            .map((id) => [id, selectedValues(id)])
+            .concat(
+              ["search", "minimumUsd", "minimumField", "sortBy"].map((id) => [
+                id,
+                $(id).value,
+              ]),
+            ),
+        ),
+      ),
+    );
+  } catch {}
+}
+function coverage() {
+  return coverageSummary(state.selected, state.coverage, chainBy, keys, {
+    evm: EVM,
+    sol: SOL,
+  });
+}
+const expandedAddresses = new Set();
+function render() {
+  const started = performance.now();
+  syncFilterOptions();
+  drawFilterMenus();
+  const currentFilters = filters(),
+    data = model(),
+    allGroups = nowGroups(),
+    groups = visibleGroups(allGroups, currentFilters);
+  const outstanding = groups.filter((g) =>
+      ["unpaid", "partial"].includes(g.status),
+    ),
+    missing = outstanding.filter((g) => !g.priced).length;
+  const amount = outstanding.reduce(
+      (sum, g) => sum + (g.usdActionable || 0),
+      0,
+    ),
+    hasPrice = outstanding.some((g) => g.priced);
+  $("heroAmount").textContent =
+    !state.records.length || (missing && !hasPrice)
+      ? "—"
+      : (missing ? "≥ " : "") +
+        amount.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 4,
+        });
+  $("heroDetail").textContent = missing
+    ? `${missing} 项缺少报价，未计入总额`
+    : state.records.length
+      ? "按当前筛选与结清阈值计算 · 稳定币固定 1 USD"
+      : "先设置收款钱包与数据源";
+  const cov = coverage(),
+    done = cov.filter((c) => c.status === "complete").length;
+  $("metrics").innerHTML =
+    `<div><p>需返还地址</p><strong>${new Set(outstanding.map((g) => (g.chain === "solana" ? "sol:" : "evm:") + g.trader)).size}</strong></div><div><p>待核对</p><strong>${data.pending.length}</strong></div>`;
+  $("reviewCount").textContent = data.pending.length;
+  $("notice").textContent =
+    storageWarn ||
+    (busy
+      ? progress
+      : !state.records.length
+        ? "尚未同步"
+        : `已完成 ${done}/${cov.length} 个所选网络${cov.some((c) => c.status === "missing") ? " · 有网络缺少凭证" : ""}`);
+  $("updated").textContent = state.updated
+    ? "更新于 " + new Date(state.updated).toLocaleString("zh-CN")
+    : "";
+  $("syncButton").textContent = busy
+    ? "暂停"
+    : !state.records.length
+      ? "开始同步"
+      : cov.some((c) => ["paused", "error", "running"].includes(c.status))
+        ? "继续未完成"
+        : "同步新增";
+  for (const id of [
+    "setupButton",
+    "retryButton",
+    "recheckPending",
+    "auditConfirmed",
+  ])
+    $(id).disabled = busy;
+  $("recheckPending").hidden = !rawViews.has(view) || view === "ignored";
+  $("recheckResults").hidden = !state.lastRecheck;
+  $("sortBy").hidden = view !== "ledger";
+  $("ledgerView").hidden = rawViews.has(view);
+  $("reviewView").hidden = !rawViews.has(view);
+  $("minimumControl").hidden = $("minimumField").hidden = rawViews.has(view);
+  $("ledgerTab").classList.toggle("active", !rawViews.has(view));
+  $("reviewTab").classList.toggle("active", rawViews.has(view));
+  $("ledgerTab").setAttribute("aria-selected", String(!rawViews.has(view)));
+  $("reviewTab").setAttribute("aria-selected", String(rawViews.has(view)));
+  $("tableArea").setAttribute(
+    "aria-labelledby",
+    rawViews.has(view) ? "reviewTab" : "ledgerTab",
+  );
+  const chosen = [
+    "chainFilter",
+    "statusFilter",
+    "directionFilter",
+    "tokenFilter",
+    "assetFilter",
+  ].reduce((n, id) => n + selectedValues(id).length, 0);
+  $("filterSummary").textContent =
+    chosen || $("search").value || Number($("minimumUsd").value)
+      ? `已应用筛选 · 汇总仅含当前范围${Number($("minimumUsd").value) ? " · 缺报价地址保留" : ""}`
+      : "全部记录";
+  $("evmDisplay").textContent = EVM || "未设置";
+  $("solDisplay").textContent = SOL || "未设置";
+  $("migrationNote").hidden = !(
+    state.migrationPending ||
+    data.pending.some((r) => r.needsProof || r.importedUnverified)
+  );
+  $("migrationNote").textContent =
+    "已更新归属规则。旧结论缺少凭证的记录已回到待核对，核验后重建；历史扫描进度保留。";
+  let items, headers, renderRow;
+  if (view === "ledger") {
+    const result = sortAddresses(groups, $("sortBy").value);
+    items = result.items;
+    headers = ["币种", "应返总额", "已返总额", "实际差额", "状态", ""];
+    renderRow = (address) => {
+      const key =
+          (address.assets[0].chain === "solana" ? "sol:" : "evm:") +
+          address.address,
+        t = result.totals.get(key);
+      const head = `<tr class="addresshead"><td colspan="6"><div class="addressbar"><button class="addresscopy mono" data-copy="${esc(address.address)}" title="复制完整地址">${esc(short(address.address))} ⧉</button><div class="addresssummary"><span>应返<b>${usd(t.due)}</b></span><span>已返<b>${usd(t.paid)}</b></span><span>需处理<b class="amount">${usd(t.remaining)}</b></span>${t.excess ? `<span>超返<b>${usd(t.excess)}</b></span>` : ""}${t.missing ? "<span>部分资产缺价</span>" : ""}</div></div></td></tr>`;
+      const assets = expandedAddresses.has(key)
+        ? address.assets
+        : address.assets.slice(0, 5);
+      return (
+        head +
+        assets
+          .map((g) => {
+            const net = BigInt(g.due) - BigInt(g.paid),
+              amountCell = (raw, quote) =>
+                `<span class="quantity" title="${esc(format(raw, g.decimals))}">${esc(quantity(raw, g.decimals))}</span><span class="cellsub">${g.priced ? usd(quote) : "缺少报价"}</span>`;
+            return `<tr><td>${currency(g)}</td><td class="num">${amountCell(g.due, g.usdDue)}</td><td class="num">${amountCell(g.paid, g.usdPaid)}</td><td class="num ${net < 0n ? "warning" : "amount"}">${amountCell(net, (g.usdDue || 0) - (g.usdPaid || 0))}<span class="cellsub">${net < 0n ? "负数：超返" : net > 0n ? "正数：待返" : "精确结清"}</span></td><td>${badge(g)}</td><td><button class="rowaction" data-group="${esc(g.key)}">明细</button></td></tr>`;
+          })
+          .join("") +
+        (address.assets.length > 5
+          ? `<tr class="assetfold"><td colspan="6"><button class="textbutton" data-expand="${esc(key)}">${expandedAddresses.has(key) ? "收起" : "查看全部 " + address.assets.length + " 项资产"}</button></td></tr>`
+          : "")
+      );
+    };
+  } else if (view === "assets") {
+    const assets = new Map();
+    for (const g of groups) {
+      const key = g.chain + ":" + g.asset;
+      if (!assets.has(key))
+        assets.set(key, {
+          ...g,
+          due: 0n,
+          paid: 0n,
+          actionable: 0,
+          excessValue: 0,
+          addresses: new Set(),
+        });
+      const a = assets.get(key);
+      a.due += BigInt(g.due);
+      a.paid += BigInt(g.paid);
+      a.actionable += g.usdActionable || 0;
+      a.excessValue += g.usdActionableExcess || 0;
+      a.addresses.add(g.trader);
+    }
+    items = [...assets.values()].sort((a, b) => b.actionable - a.actionable);
+    headers = [
+      "网络 / 币种",
+      "地址数",
+      "应返总额",
+      "已返总额",
+      "需处理 USD",
+      "超返 USD",
+    ];
+    renderRow = (a) =>
+      `<tr><td>${currency(a)}</td><td class="num">${a.addresses.size}</td><td class="num">${esc(quantity(a.due, a.decimals))}</td><td class="num">${esc(quantity(a.paid, a.decimals))}</td><td class="num">${a.priced ? usd(a.actionable) : "缺少报价"}</td><td class="num">${a.priced ? usd(a.excessValue) : "缺少报价"}</td></tr>`;
+  } else {
+    items = (
+      view === "spam"
+        ? data.spam
+        : view === "ignored"
+          ? data.ignored
+          : data.pending
+    )
+      .filter((r) => matchesFilters(r, currentFilters, view))
+      .sort((a, b) => (b.time || "").localeCompare(a.time || ""));
+    headers = ["时间 / 币种", "方向", "金额", "日志来源 / 去向", "原因", ""];
+    renderRow = (r) =>
+      `<tr><td>${currency(r)}<span class="cellsub">${r.time ? esc(new Date(r.time).toLocaleString("zh-CN")) : "时间未知"}</span></td><td>${r.direction === "in" ? "转入" : "转出"}</td><td class="num">${esc(quantity(r.raw, r.decimals))}</td><td><button class="addresscopy mono" data-copy="${esc(r.direction === "in" ? r.from : r.to)}">${esc(short(r.direction === "in" ? r.from : r.to))}</button><span class="cellsub">${r.direction === "in" ? "资金来源，不代表归属人" : "日志接收地址"}</span></td><td class="reviewreason">${esc(r.spamReason || r.reviewReason || r.exclusionReason || r.evidence || "需要补充归属证明")}</td><td><button class="rowaction" data-record="${esc(r.id)}">核对</button></td></tr>`;
+  }
+  const paged = pageItems(items, page);
+  page = paged.page;
+  $("tableArea").dataset.view = view;
+  $("tableArea").innerHTML =
+    `<table><thead><tr>${headers.map((h, i) => `<th scope="col"${[2, 3, 4].includes(i) ? ' class="num"' : ""}>${esc(h)}</th>`).join("")}</tr></thead><tbody>${paged.items.map(renderRow).join("") || `<tr><td class="empty" colspan="${headers.length}"><h3>${state.records.length ? "当前范围没有记录" : "还没有账目"}</h3><p>${state.records.length ? "调整筛选查看其他记录。" : "设置钱包和数据源后开始同步，或导入历史备份。"}</p></td></tr>`}</tbody></table>`;
+  for (const tr of $("tableArea").querySelectorAll(
+    "tr:not(.addresshead):not(.assetfold)",
+  ))
+    for (const [i, td] of [...tr.cells].entries())
+      td.dataset.label = headers[i] || "";
+  $("rowCount").textContent =
+    `${paged.total} ${view === "ledger" ? "个地址" : view === "assets" ? "项资产" : "条记录"}`;
+  $("pageNum").textContent = `${page} / ${paged.max}`;
+  $("prev").disabled = page <= 1;
+  $("next").disabled = page >= paged.max;
+  render.lastMs = performance.now() - started;
+}
+
+async function refreshPrices(force = false) {
+  if (priceBusy || (document.hidden && !force)) return;
+  const assets = [
+    ...new Map(
+      model().groups.map((g) => [
+        g.chain + ":" + g.asset,
+        { chain: g.chain, asset: g.asset },
+      ]),
+    ).values(),
+  ];
+  if (!assets.length) {
+    $("priceStatus").textContent = "";
+    return;
+  }
+  priceBusy = true;
+  $("priceStatus").textContent = "更新报价中";
+  const walletKey = walletStorage();
+  const fetchPrices = async () => {
+    const stored = safeRead(localStorage, "rebate-price-cache-v2", {});
+    const recent = Object.fromEntries(
+      Object.entries(stored).filter(
+        ([, p]) => p && Number(p.usd) > 0 && Date.now() - p.at < 5 * 60e3,
+      ),
+    );
+    prices = { ...prices, ...recent };
+    const missing = assets.filter(
+      (a) => force || !recent[a.chain + ":" + a.asset],
+    );
+    let failed = false;
+    for (let i = 0; i < missing.length; i += 30) {
+      const batch = missing.slice(i, i + 30),
+        data = await lookupPrices(batch);
+      if (walletStorage() !== walletKey) return;
+      prices = { ...prices, ...data.prices };
+      const unresolved = batch.filter(
+        (a) => !data.prices[a.chain + ":" + a.asset],
+      );
+      if (unresolved.length) {
+        try {
+          const response = await fetch("/api/prices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ assets: unresolved }),
+            signal: AbortSignal.timeout(20000),
+          });
+          if (!response.ok) throw Error();
+          const fallback = await response.json();
+          prices = { ...prices, ...fallback.prices };
+          failed ||= !!fallback.errors?.length;
+        } catch {
+          failed = true;
+        }
+      }
+    }
+    const bounded = Object.fromEntries(
+      Object.entries(prices)
+        .filter(([, p]) => Date.now() - p.at < 15 * 60e3)
+        .slice(-1000),
+    );
+    try {
+      localStorage.setItem("rebate-price-cache-v2", JSON.stringify(bounded));
+    } catch {}
+    $("priceStatus").textContent = failed
+      ? "部分资产缺价"
+      : "报价 " + new Date().toLocaleTimeString("zh-CN");
+  };
+  try {
+    if (navigator.locks)
+      await navigator.locks.request("rebate-price-refresh", fetchPrices);
+    else await fetchPrices();
+  } catch {
+    $("priceStatus").textContent = "报价暂不可用，可重试";
+  } finally {
+    priceBusy = false;
+    scheduleRender();
+  }
+}
+function updateAllowlist(rows) {
+  const next = normalizeAllowlist(rows);
+  if (next.some((r) => revokedAsset(r.chain, r.asset)))
+    throw Error("名单包含已撤销的假币合约");
+  localStorage.setItem(
+    "rebate-asset-allowlist-v2",
+    JSON.stringify({
+      assets: next,
+      knownDefaults: normalizeAllowlist(defaultAllowlist),
+    }),
+  );
+  assetAllowlist = next;
+  configureAssetAllowlist(next);
+  policyVersion++;
+  prices = {};
+}
+function fillSettings() {
+  settingsDraft = [...state.selected];
+  $("evmWallet").value = EVM;
+  $("solWallet").value = SOL;
+  $("toleranceEnabled").checked = preferences.enabled;
+  $("toleranceValue").value = preferences.threshold;
+  $("assetAllowlist").value = formatAllowlist(assetAllowlist);
+  $("credentialMode").value = credentialMode;
+  $("bscStartBlock").value = scanOptions["56"]?.startBlock || 0;
+  for (const [id, key] of Object.entries(credentialFields))
+    $(id).value = keys[key] || "";
+  for (const [id, key] of [
+    ["xlayerKey", "key"],
+    ["xlayerSecret", "secret"],
+    ["xlayerPassphrase", "passphrase"],
+  ])
+    $(id).value = keys.xlayer?.[key] || "";
+  $("showAllNetworks").checked = false;
+  $("chainSearch").value = "";
+  drawChoices();
+}
+function settings() {
+  fillSettings();
+  $("settings").showModal();
+}
+function drawChoices() {
+  const q = $("chainSearch").value.toLowerCase(),
+    all = $("showAllNetworks").checked;
+  $("chainChoices").innerHTML = chains
+    .filter(
+      (c) =>
+        !c.unsupported &&
+        !/testnet/i.test(c.name) &&
+        (all ||
+          q ||
+          COMMON_CHAINS.includes(c.id) ||
+          settingsDraft.includes(c.id)),
+    )
+    .filter((c) => (c.name + " " + c.id).toLowerCase().includes(q))
+    .sort(
+      (a, b) =>
+        Number(COMMON_CHAINS.includes(b.id)) -
+        Number(COMMON_CHAINS.includes(a.id)),
+    )
+    .map(
+      (c) =>
+        `<label><input type="checkbox" data-chain="${esc(c.id)}" ${settingsDraft.includes(c.id) ? "checked" : ""}><span>${esc(c.name)}</span></label>`,
+    )
+    .join("");
+}
+async function saveSettings() {
+  if (busy) return;
+  busy = true;
+  controller = null;
+  try {
+    const evm = $("evmWallet").value.trim().toLowerCase(),
+      sol = $("solWallet").value.trim(),
+      threshold = $("toleranceValue").value;
+    if (
+      (evm && !validAddress("1", evm)) ||
+      (sol && !validAddress("solana", sol))
+    )
+      throw Error("钱包地址格式不正确");
+    if (
+      !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(threshold) ||
+      threshold.length > 40 ||
+      Number(threshold) > 1000000
+    )
+      throw Error("请填写有效差额阈值");
+    const nextAllowlist = parseAllowlist($("assetAllowlist").value);
+    if (nextAllowlist.some((r) => revokedAsset(r.chain, r.asset)))
+      throw Error("名单包含已撤销的假币合约");
+    const xlayer = {
+      key: $("xlayerKey").value.trim(),
+      secret: $("xlayerSecret").value.trim(),
+      passphrase: $("xlayerPassphrase").value.trim(),
+    };
+    if (
+      Object.values(xlayer).some(Boolean) &&
+      !Object.values(xlayer).every(Boolean)
+    )
+      throw Error("X Layer 需同时填写 Key、Secret 和 Passphrase");
+    const nextKeys = Object.fromEntries(
+      Object.entries(credentialFields).map(([id, key]) => [
+        key,
+        $(id).value.trim(),
+      ]),
+    );
+    nextKeys.xlayer = Object.values(xlayer).every(Boolean) ? xlayer : null;
+    if (
+      Object.values(nextKeys).some(
+        (v) => typeof v === "string" && v.length > 512,
+      ) ||
+      Object.values(xlayer).some((v) => v.length > 512)
+    )
+      throw Error("凭证长度不正确");
+    const startBlock = Number($("bscStartBlock").value);
+    if (!Number.isSafeInteger(startBlock) || startBlock < 0)
+      throw Error("起始区块应为非负整数");
+    const mode = $("credentialMode").value,
+      nextPreferences = { enabled: $("toleranceEnabled").checked, threshold },
+      nextOptions = { 56: { startBlock } };
+    await saver.flush();
+    const changedWallet = evm !== EVM || sol !== SOL,
+      nextStorage = `rebate-ledger-wallet:${evm}:${sol}`;
+    const nextState = changedWallet
+      ? validateState((await readHistory(nextStorage)) || emptyState(), {
+          trustEvidence: true,
+          wallets: { evm, sol },
+        })
+      : { ...state, coverage: { ...state.coverage } };
+    nextState.selected = [...settingsDraft];
+    migrateState(nextState);
+    const oldStart = scanOptions["56"]?.startBlock || 0;
+    if (startBlock !== oldStart && nextState.coverage["56"])
+      nextState.coverage["56"] = {
+        streams: {},
+        inspected: [],
+        status: "stale",
+        error: "历史范围已改变，将按所选区块补查",
+      };
+    const assignments = [
+      ["rebate-wallets-v1", { evm, sol }],
+      ["rebate-preferences-v1", nextPreferences],
+      ["rebate-scan-options-v1", nextOptions],
+      [
+        "rebate-asset-allowlist-v2",
+        {
+          assets: normalizeAllowlist(nextAllowlist),
+          knownDefaults: normalizeAllowlist(defaultAllowlist),
+        },
+      ],
+    ];
+    const rollback = assignments.map(([key]) => [
+      key,
+      localStorage.getItem(key),
+    ]);
+    const oldMode = localStorage.getItem("rebate-credential-mode"),
+      oldLocal = localStorage.getItem("rebate-credentials-v1"),
+      oldSession = sessionStorage.getItem("rebate-credentials-v1");
+    try {
+      for (const [key, value] of assignments)
+        localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem("rebate-credential-mode", mode);
+      (mode === "session" ? sessionStorage : localStorage).setItem(
+        "rebate-credentials-v1",
+        JSON.stringify(nextKeys),
+      );
+      (mode === "session" ? localStorage : sessionStorage).removeItem(
+        "rebate-credentials-v1",
+      );
+      await writeHistory(nextStorage, nextState);
+    } catch (error) {
+      for (const [key, value] of rollback)
+        value === null
+          ? localStorage.removeItem(key)
+          : localStorage.setItem(key, value);
+      for (const [store, key, value] of [
+        [localStorage, "rebate-credential-mode", oldMode],
+        [localStorage, "rebate-credentials-v1", oldLocal],
+        [sessionStorage, "rebate-credentials-v1", oldSession],
+      ])
+        value === null ? store.removeItem(key) : store.setItem(key, value);
+      throw Error("浏览器无法保存设置，未应用修改");
+    }
+    // Commit only after every field and persistence operation succeeds.
+    configureWallets(evm, sol);
+    state = nextState;
+    state.selected = [...settingsDraft];
+    keys = nextKeys;
+    credentialMode = mode;
+    preferences = nextPreferences;
+    scanOptions = nextOptions;
+    assetAllowlist = normalizeAllowlist(nextAllowlist);
+    configureAssetAllowlist(assetAllowlist);
+    policyVersion++;
+    prices = {};
+    filterSignature = "";
+    navigator.storage?.persist?.().catch(() => {});
+    $("settings").close();
+    render();
+    refreshPrices();
+    toast("设置已保存");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    busy = false;
+    render();
+  }
+}
+function renderCoverage() {
+  const items = coverage();
+  $("coverageSummary").textContent =
+    `所选 ${items.length} 个网络 · ${items.filter((c) => c.status === "complete").length} 个已完成 · 未完成不代表零欠款`;
+  const count = new Map();
+  for (const row of state.records)
+    count.set(row.chain, (count.get(row.chain) || 0) + 1);
+  const labels = {
+    complete: "历史已扫描",
+    missing: "缺少钱包或凭证",
+    error: "同步失败",
+    paused: "已暂停",
+    running: "同步中",
+    stale: "需要补核验",
+    idle: "尚未同步",
+  };
+  $("coverageBody").innerHTML = items
+    .map(
+      ({ chain, coverage: cov, status }) =>
+        `<article class="coveragecard"><strong>${esc(chain.name)} · ${esc(labels[status] || status)}</strong><p>${count.get(chain.id) || 0} 条记录${scanOptions[chain.id]?.startBlock ? " · 从区块 " + scanOptions[chain.id].startBlock + " 查询" : ""}</p><p>${esc(cov.error || (cov.updated && new Date(cov.updated).toLocaleString("zh-CN")) || "")}</p><button class="secondary" data-sync-chain="${esc(chain.id)}" ${busy ? "disabled" : ""}>${status === "missing" ? "设置数据源" : "查询此链"}</button></article>`,
+    )
+    .join("");
+}
+async function sync(onlyId = null, retryOnly = false) {
+  if (busy) {
+    controller?.abort();
+    setProgress("正在暂停，保存已完成进度…");
+    return;
+  }
+  let selected = onlyId ? [onlyId] : [...state.selected];
+  if (retryOnly)
+    selected = selected.filter(
+      (id) => state.coverage[id]?.status !== "complete",
+    );
+  const ready = selected.filter((id) => {
+    const c = chainBy(id);
+    return (
+      !c.unsupported &&
+      (id === "solana" ? SOL && keys.helius : EVM && keys[providerFor(c)])
+    );
+  });
+  if (!ready.length) {
+    settings();
+    toast("请设置钱包和对应数据源，再保存设置");
+    return;
+  }
+  if (onlyId && !state.selected.includes(onlyId))
+    state.selected = [...state.selected, onlyId];
+  busy = true;
+  controller = new AbortController();
+  progress = "准备同步";
+  render();
+  renderCoverage();
+  try {
+    const result = await runSync({
+      state,
+      ids: ready,
+      chains,
+      keys,
+      routers,
+      wallets: { evm: EVM, sol: SOL },
+      signal: controller.signal,
+      scanOptions,
+      onProgress: setProgress,
+      onChange: scheduleRender,
+      onCheckpoint: () => save(true),
+    });
+    toast(
+      result.aborted
+        ? "已暂停，进度已保存"
+        : result.errors.length
+          ? `${result.errors.length} 个网络未完成，可在同步详情中重试`
+          : "同步完成",
+    );
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    progress = "";
+    await save(true).catch(() => {});
+    busy = false;
+    render();
+    controller = null;
+    renderCoverage();
+    refreshPrices();
+  }
+}
+function showRecords(ids) {
+  activeRecordIds = ids;
+  renderDetails();
+  if (!$("detail").open) $("detail").showModal();
+}
+function renderDetails() {
+  const rows = activeRecordIds
+    .map((id) => model().byId.get(id))
+    .filter(Boolean)
+    .slice(0, 100);
+  $("detailBody").innerHTML =
+    rows
+      .map((row) => {
+        const decision = state.decisions[row.id],
+          roles = row.roles || {};
+        const type = row.spam
+          ? "疑似垃圾"
+          : row.kind === "commission"
+            ? "返佣收入"
+            : row.kind === "refund"
+              ? "返还支出"
+              : row.kind === "ignore"
+                ? "其他 / 未计入"
+                : "待核对";
+        const fields = [
+          [
+            "归属地址",
+            ["commission", "refund"].includes(row.kind)
+              ? row.trader
+              : "尚未确认",
+          ],
+          ["网络", chainBy(row.chain).name],
+          ["币种合约", row.asset],
+          ["交易", row.hash],
+          ["交易发起人", roles.transactionSender || row.txSender || "未核验"],
+          ["订单持有人", roles.owner || "未取得证明"],
+          ["路由合约", roles.router || "—"],
+          ["手续费支付者", roles.feePayer || row.suggestedTrader || "—"],
+          ["付款授权", roles.authority || "—"],
+          ["日志发送", row.from],
+          ["日志接收", row.to],
+        ];
+        return `<article class="record"><strong>${esc(type)} · ${esc(format(row.raw, row.decimals))} ${esc(row.symbol)}</strong><p class="evidence">${esc(row.spamReason || row.reviewReason || row.exclusionReason || row.evidence || "")}</p><dl>${fields.map(([label, value]) => `<dt>${esc(label)}</dt><dd class="mono">${esc(value)}</dd>`).join("")}</dl><div class="actions"><a href="${esc(link(row))}" target="_blank" rel="noreferrer">链上交易 ↗</a><button class="textbutton" data-copy="${esc(format(row.raw, row.decimals))}">复制完整金额</button></div>${!row.supersededBy && row.raw !== "0" ? `<details class="decisionform"><summary>${decision ? "修改人工判断" : "人工核对"}</summary><p class="metadata">按实际用途判断。原始流水保留，可随时撤销。${row.importedUnverified ? "此记录来自备份；人工用途已保留，需先核验交易与金额才会生效。" : ""}</p><form data-decision="${esc(row.id)}"><label class="field">用途<select name="kind"><option value="pending">待核对</option>${row.direction === "in" ? '<option value="commission">返佣</option>' : '<option value="refund">返还</option>'}<option value="ignore">其他用途，不计入</option></select></label><label class="field">归属地址<input name="trader" value="${esc(decision?.trader || (["commission", "refund"].includes(row.kind) ? row.trader : ""))}" autocomplete="off" placeholder="最终被邀请地址"></label><label class="field">判断原因<input name="reason" maxlength="500" value="${esc(decision?.reason || "")}" required placeholder="用途或凭证说明"></label><div class="actions"><button type="submit" ${busy ? "disabled" : ""}>保存判断</button>${decision ? `<button class="secondary" type="button" data-undo="${esc(row.id)}">撤销人工判断</button>` : ""}</div></form></details>` : ""}${row.spam ? `<div class="actions"><button class="secondary" data-keep="${esc(row.id)}">仅保留这笔记录</button>${row.asset !== "native" ? `<button class="secondary" data-trust="${esc(row.id)}">信任此合约</button>` : ""}</div>` : ""}<details><summary>开发者诊断</summary><button class="secondary" data-case="${esc(row.id)}">复制案例</button></details></article>`;
+      })
+      .join("") +
+    (activeRecordIds.length > 100
+      ? '<p class="metadata">仅展开前 100 条凭证；可在核对记录按交易搜索。</p>'
+      : "");
+  for (const form of $("detailBody").querySelectorAll("[data-decision]"))
+    form.elements.kind.value =
+      state.decisions[form.dataset.decision]?.kind || "pending";
+}
+async function applyDecision(id, decision) {
+  if (busy) return toast("请先暂停同步或核验");
+  const row = model().byId.get(id);
+  if (!row) return;
+  if (
+    ["commission", "refund"].includes(decision.kind) &&
+    !validAddress(row.chain, decision.trader)
+  )
+    return toast("请填写有效的最终归属地址");
+  if (["commission", "refund"].includes(decision.kind) && row.spam)
+    return toast("请先确认合约身份；单笔保留不会自动信任未知资产");
+  await commitDecisions(
+    {
+      ...state.decisions,
+      [id]: {
+        ...decision,
+        trader:
+          row.chain === "solana"
+            ? decision.trader
+            : decision.trader?.toLowerCase(),
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    "人工判断已保存",
+  );
+}
+async function commitDecisions(decisions, message) {
+  if (busy) return;
+  busy = true;
+  controller = null;
+  try {
+    await saver.flush();
+    const candidate = { ...state, decisions };
+    await writeHistory(walletStorage(), candidate);
+    state = candidate;
+    toast(message);
+  } catch (error) {
+    toast("判断保存失败，原账目未改变：" + error.message);
+  } finally {
+    busy = false;
+    render();
+    renderDetails();
+    refreshPrices();
+  }
+}
+const recheckLabels = {
+  queued: "等待处理",
+  missing: "缺少凭证",
+  failed: "请求失败",
+  resolved: "已解决",
+  partial: "部分解决",
+  unresolved: "仍待核对",
+  cancelled: "未处理",
+};
+function showRecheckReport() {
+  const report = state.lastRecheck;
+  if (!report?.entries) return toast("暂无核验结果");
+  const filter = $("recheckResultFilter").value;
+  const entries = report.entries.filter(
+    (e) =>
+      filter === "all" ||
+      (filter === "unresolved"
+        ? ["unresolved", "partial"].includes(e.status)
+        : filter === "cancelled"
+          ? ["cancelled", "queued"].includes(e.status)
+          : e.status === filter),
+  );
+  const counts = new Map();
+  for (const e of report.entries)
+    counts.set(e.status, (counts.get(e.status) || 0) + 1);
+  $("recheckSummary").textContent =
+    `${report.entries.length} 笔交易 · 已解决 ${counts.get("resolved") || 0} · 部分解决 ${counts.get("partial") || 0} · 待核对 ${counts.get("unresolved") || 0} · 失败 ${counts.get("failed") || 0} · 缺凭证 ${counts.get("missing") || 0} · 未处理 ${(counts.get("queued") || 0) + (counts.get("cancelled") || 0)}`;
+  const paged = pageItems(entries, reportPage);
+  reportPage = paged.page;
+  $("recheckRows").replaceChildren(
+    ...paged.items.map((entry) => {
+      const article = document.createElement("article");
+      article.className = "reportrow";
+      const first = document.createElement("div"),
+        title = document.createElement("strong"),
+        a = document.createElement("a");
+      title.textContent = chainBy(entry.chain).name;
+      a.textContent = short(entry.hash) + " ↗";
+      a.href = link(entry);
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      first.append(title, document.createElement("br"), a);
+      const second = document.createElement("div"),
+        status = document.createElement("p"),
+        reason = document.createElement("p");
+      status.textContent = `${recheckLabels[entry.status] || "未知"} · 待核对 ${Number(entry.before) || 0} → ${Number(entry.after) || 0}`;
+      reason.textContent =
+        entry.error ||
+        (["unresolved", "partial"].includes(entry.status)
+          ? "数据已取得，归属证明仍不足，可人工核对"
+          : "已按当前规则处理");
+      second.append(status, reason);
+      const button = document.createElement("button");
+      button.className = "secondary";
+      button.textContent = "明细";
+      button.dataset.recheckDetail = entry.key;
+      article.append(first, second, button);
+      return article;
+    }),
+  );
+  $("reportPage").textContent = `${reportPage} / ${paged.max}`;
+  $("reportPrev").disabled = reportPage <= 1;
+  $("reportNext").disabled = reportPage >= paged.max;
+  $("retryRecheckFailures").disabled =
+    busy ||
+    !report.entries.some((e) =>
+      ["failed", "missing", "cancelled", "queued"].includes(e.status),
+    );
+  if (!$("recheckReport").open) $("recheckReport").showModal();
+}
+async function recheck(retryKeys = null, scope = "pending") {
+  if (busy) return;
+  const currentFilters = filters(),
+    data = model();
+  const candidates = (
+    scope === "confirmed"
+      ? data.classified.filter(
+          (r) =>
+            !r.supersededBy &&
+            !r.spam &&
+            ["commission", "refund", "pending"].includes(r.kind) &&
+            r.raw !== "0",
+        )
+      : view === "spam"
+        ? data.spam
+        : data.pending
+  ).filter((r) =>
+    retryKeys
+      ? retryKeys.has(r.chain + ":" + r.hash)
+      : matchesFilters(r, currentFilters, view),
+  );
+  const { entries, jobs } = planRecheck(
+    candidates,
+    state.records,
+    chainBy,
+    keys,
+  );
+  if (!entries.length) return toast("当前范围没有可核验的记录");
+  state.lastRecheck = {
+    started: new Date().toISOString(),
+    before: candidates.length,
+    total: data.pending.length,
+    entries,
+  };
+  reportPage = 1;
+  busy = true;
+  controller = new AbortController();
+  render();
+  try {
+    await save(true);
+  } catch (error) {
+    busy = false;
+    controller = null;
+    render();
+    toast(error.message);
+    return;
+  }
+  if (!jobs.length) {
+    busy = false;
+    controller = null;
+    render();
+    return showRecheckReport();
+  }
+  const force = $("forceRefresh").checked,
+    index = new RecordIndex(state.records),
+    entryIndex = new Map(entries.map((e, i) => [e.key, i]));
+  let completed = 0,
+    cursor = 0,
+    endSent = false,
+    buffer = [],
+    lastFlush = Date.now(),
+    worker,
+    cancel;
+  const inspectedByChain = new Map(
+    Object.entries(state.coverage).map(([id, cov]) => [
+      id,
+      new Set(cov.inspected || []),
+    ]),
+  );
+  const flush = async () => {
+    if (!buffer.length) return;
+    const batch = buffer;
+    buffer = [];
+    const touchedChains = new Set();
+    for (const result of batch) {
+      touchedChains.add(result.chain);
+      if (!inspectedByChain.has(result.chain))
+        inspectedByChain.set(result.chain, new Set());
+      const inspected = inspectedByChain.get(result.chain);
+      const cov = (state.coverage[result.chain] ||= {
+        streams: {},
+        inspected: [],
+      });
+      cov.inspectionErrors ||= {};
+      if (result.error) {
+        inspected.delete(result.hash);
+        cov.inspectionErrors[result.hash] = result.error;
+        index.merge(
+          index
+            .transaction(result.chain, result.hash)
+            .map((r) => ({ ...r, inspectionError: result.error })),
+        );
+      } else {
+        index.replace(result.chain, result.hash, result.rows || []);
+        inspected.add(result.hash);
+        delete cov.inspectionErrors[result.hash];
+      }
+    }
+    for (const id of touchedChains)
+      state.coverage[id].inspected = [...inspectedByChain.get(id)];
+    state.records = index.values();
+    state.updated = new Date().toISOString();
+    const counts = pendingCounts(model().pending);
+    for (const result of batch) {
+      const position = entryIndex.get(result.key);
+      state.lastRecheck.entries[position] = recheckOutcome(
+        state.lastRecheck.entries[position],
+        counts,
+        result.error,
+      );
+    }
+    lastFlush = Date.now();
+    await save(true);
+    scheduleRender();
+  };
+  const started = Date.now();
+  const update = () =>
+    setProgress(
+      `核验 ${completed}/${jobs.length} 笔交易 · ${Math.round((completed * 60000) / Math.max(1, Date.now() - started))} 笔/分钟${document.hidden ? " · 后台保存进度" : ""}`,
+    );
+  const nextBatch = () => {
+    if (endSent) return;
+    const batch = jobs.slice(cursor, cursor + 30);
+    cursor += batch.length;
+    if (batch.length) worker.postMessage({ type: "append", jobs: batch });
+    if (cursor >= jobs.length) {
+      worker.postMessage({ type: "end" });
+      endSent = true;
+    }
+  };
+  try {
+    if (controller.signal.aborted) throw Error("已暂停");
+    worker = new Worker(new URL("./recheck-worker.mjs", import.meta.url), {
+      type: "module",
+    });
+    cancel = () => worker.postMessage({ type: "cancel" });
+    controller.signal.addEventListener("abort", cancel, { once: true });
+    render();
+    update();
+    await new Promise((resolve, reject) => {
+      let flushChain = Promise.resolve();
+      worker.onmessage = ({ data: result }) => {
+        if (result.type === "need-jobs") nextBatch();
+        else if (result.type === "result") {
+          completed++;
+          buffer.push(result);
+          update();
+          if (buffer.length >= 10 || Date.now() - lastFlush >= 2500) {
+            flushChain = flushChain.then(flush);
+            flushChain.catch(reject);
+          }
+        } else if (result.type === "done") {
+          for (const [provider, values] of Object.entries(
+            result.diagnostics || {},
+          )) {
+            workerDiagnostics[provider] ||= {};
+            for (const [key, value] of Object.entries(values))
+              workerDiagnostics[provider][key] =
+                (workerDiagnostics[provider][key] || 0) + value;
+          }
+          flushChain.then(flush).then(resolve, reject);
+        } else if (result.type === "fatal") reject(Error(result.error));
+      };
+      worker.onerror = (e) => reject(Error(e.message || "核验线程退出"));
+      worker.postMessage({
+        type: "start",
+        streaming: true,
+        jobs: [],
+        keys,
+        routers,
+        wallets: { evm: EVM, sol: SOL },
+        forceRefresh: force,
+      });
+    });
+  } catch (error) {
+    toast(error.message);
+    await flush().catch(() => {});
+  } finally {
+    if (cancel) controller?.signal.removeEventListener("abort", cancel);
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+    }
+    controller = null;
+    const counts = pendingCounts(model().pending);
+    state.lastRecheck.entries = state.lastRecheck.entries.map((entry) =>
+      entry.status === "queued"
+        ? { ...entry, status: "cancelled", error: "任务已暂停，可继续未处理项" }
+        : ["missing", "cancelled"].includes(entry.status)
+          ? entry
+          : recheckOutcome(entry, counts, entry.error),
+    );
+    state.lastRecheck.finished = new Date().toISOString();
+    state.migrationPending = model().pending.some(
+      (r) => r.needsProof || r.importedUnverified,
+    );
+    progress = "";
+    await save(true).catch(() => {});
+    busy = false;
+    render();
+    refreshPrices();
+    showRecheckReport();
+  }
+}
+
+function download(filename, content, type = "application/json") {
+  const blob =
+      content instanceof Blob ? content : new Blob([content], { type }),
+    url = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+let backupBusy = false;
+async function backupWork(message) {
+  if (backupBusy) throw Error("请等待当前备份操作完成");
+  backupBusy = true;
+  $("backupProgress").textContent = "正在处理文件…";
+  const worker = new Worker(new URL("./backup-worker.mjs", import.meta.url), {
+    type: "module",
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) =>
+        data.ok ? resolve(data) : reject(Error(data.error));
+      worker.onerror = (e) => reject(Error(e.message || "备份线程失败"));
+      worker.postMessage(message);
+    });
+  } finally {
+    worker.terminate();
+    backupBusy = false;
+    $("backupProgress").textContent = "";
+  }
+}
+async function exportBackup(kind) {
+  try {
+    if (kind === "history") await saver.flush();
+    const include = kind === "settings" && $("includeCredentials").checked,
+      password = $("backupPassword").value;
+    if (password && password.length < 8) throw Error("加密口令至少 8 个字符");
+    const value =
+      kind === "history"
+        ? {
+            format: "rebate-history",
+            backupVersion: 2,
+            createdAt: new Date().toISOString(),
+            wallets: { evm: EVM, sol: SOL },
+            state,
+          }
+        : {
+            format: "rebate-settings",
+            version: 1,
+            wallets: { evm: EVM, sol: SOL },
+            preferences,
+            selected: state.selected,
+            assetAllowlist,
+            credentialMode,
+            scanOptions,
+            ...(include ? { credentials: keys } : {}),
+          };
+    const compress = kind === "history" && $("compressBackup").checked,
+      result = await backupWork({ type: "encode", value, password, compress });
+    download(
+      `返佣账本-${kind === "history" ? "历史" : "设置"}${include ? "-含凭证" : ""}-${new Date().toISOString().slice(0, 10)}${password ? ".rebate" : ".json"}${compress ? ".gz" : ""}`,
+      result.blob,
+    );
+    toast(include ? "设置已导出，含 API 凭证，请私下保存" : "备份已导出");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+async function importBackup(event, kind) {
+  const input = event.target,
+    file = input.files[0];
+  if (!file) return;
+  try {
+    if (busy) throw Error("请先暂停同步或核验");
+    if (kind === "history" && !EVM && !SOL)
+      throw Error("请先设置与备份相同的钱包");
+    const ownerWallet = walletStorage();
+    const { value } = await backupWork({
+      type: "decode",
+      file,
+      kind,
+      password: $("backupPassword").value,
+      wallets: { evm: EVM, sol: SOL },
+    });
+    if (kind === "history") {
+      if (busy || ownerWallet !== walletStorage())
+        throw Error("钱包或任务状态已改变，请重新导入");
+      importCandidate = value.state;
+      importWallet = ownerWallet;
+      const ids = new Set(state.records.map((r) => r.id)),
+        added = importCandidate.records.filter((r) => !ids.has(r.id)).length;
+      $("importSummary").textContent =
+        `文件包含 ${importCandidate.records.length.toLocaleString()} 条记录；将新增 ${added.toLocaleString()} 条。已有本机记录与人工判断优先保留。导入的机器归属需核验，扫描检查点保留，不从头扫描。`;
+      $("importPreview").showModal();
+    } else if (kind === "settings") {
+      $("backupCenter").close();
+      settings();
+      $("evmWallet").value = value.wallets.evm;
+      $("solWallet").value = value.wallets.sol;
+      $("toleranceEnabled").checked = value.preferences.enabled;
+      $("toleranceValue").value = value.preferences.threshold;
+      settingsDraft = value.selected.filter((id) => chainMap.has(id));
+      $("credentialMode").value = value.credentialMode;
+      $("bscStartBlock").value = value.scanOptions?.["56"]?.startBlock || 0;
+      if (value.assetAllowlist)
+        $("assetAllowlist").value = formatAllowlist(value.assetAllowlist);
+      if (value.credentials) {
+        for (const [id, key] of Object.entries(credentialFields))
+          $(id).value = value.credentials[key] || "";
+        for (const [id, key] of [
+          ["xlayerKey", "key"],
+          ["xlayerSecret", "secret"],
+          ["xlayerPassphrase", "passphrase"],
+        ])
+          $(id).value = value.credentials.xlayer?.[key] || "";
+      }
+      drawChoices();
+      toast("设置已填入，保存后生效");
+    } else {
+      $("assetAllowlist").value = formatAllowlist(value.assets);
+      toast("名单已填入，保存设置后生效");
+    }
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    input.value = "";
+  }
+}
+async function commitImport() {
+  if (!importCandidate || busy) return;
+  if (importWallet !== walletStorage()) {
+    importCandidate = null;
+    return toast("钱包已切换，请重新导入");
+  }
+  busy = true;
+  controller = null;
+  try {
+    await saver.flush();
+    const local = state,
+      incoming = importCandidate,
+      index = new RecordIndex(incoming.records);
+    index.merge(local.records);
+    const knownIds = new Set(local.records.map((r) => r.id));
+    const importedDecisions = Object.fromEntries(
+      Object.entries(incoming.decisions || {}).filter(
+        ([id]) => !knownIds.has(id),
+      ),
+    );
+    const candidate = {
+      ...incoming,
+      records: index.values(),
+      decisions: { ...importedDecisions, ...local.decisions },
+      selected: incoming.selected?.length
+        ? incoming.selected.filter((id) => chainMap.has(id))
+        : local.selected,
+    };
+    for (const [id, cov] of Object.entries(local.coverage))
+      if (
+        cov.status === "complete" &&
+        cov.updated > (candidate.coverage[id]?.updated || "")
+      )
+        candidate.coverage[id] = cov;
+    candidate.decoderVersion = 4;
+    candidate.migrationPending = candidate.records.some(
+      (r) => r.importedUnverified,
+    );
+    for (const chain of new Set(
+      candidate.records.filter((r) => r.importedUnverified).map((r) => r.chain),
+    )) {
+      const cov = (candidate.coverage[chain] ||= {
+        streams: {},
+        inspected: [],
+      });
+      candidate.coverage[chain] = {
+        ...cov,
+        status: "stale",
+        error: "导入记录尚需核验，历史分页进度保留",
+      };
+    }
+    // Persist first: an import failure leaves the active state and original data intact.
+    await writeHistory(walletStorage(), candidate);
+    state = candidate;
+    importCandidate = null;
+    $("importPreview").close();
+    $("backupCenter").close();
+    filterSignature = "";
+    render();
+    refreshPrices();
+    toast("历史已合并，核验导入记录后可同步新增");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    busy = false;
+    render();
+  }
+}
+function exportCsv() {
+  const currentFilters = filters();
+  let rows;
+  if (rawViews.has(view)) {
+    const items = (
+      view === "spam"
+        ? model().spam
+        : view === "ignored"
+          ? model().ignored
+          : model().pending
+    ).filter((r) => matchesFilters(r, currentFilters, view));
+    rows = [
+      [
+        "网络",
+        "方向",
+        "币种",
+        "合约",
+        "金额",
+        "日志发送",
+        "日志接收",
+        "归属地址",
+        "交易",
+        "时间",
+        "原因",
+      ],
+      ...items.map((r) => [
+        chainBy(r.chain).name,
+        r.direction === "in" ? "转入" : "转出",
+        r.symbol,
+        r.asset,
+        format(r.raw, r.decimals),
+        r.from,
+        r.to,
+        ["commission", "refund"].includes(r.kind) ? r.trader : "",
+        r.hash,
+        r.time,
+        r.spamReason || r.reviewReason || r.exclusionReason || r.evidence || "",
+      ]),
+    ];
+  } else {
+    rows = [
+      [
+        "网络",
+        "被邀请地址",
+        "币种",
+        "合约",
+        "应返币数",
+        "已返币数",
+        "实际差额币数",
+        "需处理USD",
+        "超返USD",
+        "状态",
+        "固定记账价或报价来源",
+        "报价时间",
+      ],
+      ...filteredGroups().map((g) => [
+        chainBy(g.chain).name,
+        g.trader,
+        g.symbol,
+        g.asset,
+        format(g.due, g.decimals),
+        format(g.paid, g.decimals),
+        format(BigInt(g.due) - BigInt(g.paid), g.decimals),
+        g.priced ? g.usdActionable : "缺少报价",
+        g.priced ? g.usdActionableExcess : "缺少报价",
+        g.withinTolerance ? "小额差额已忽略" : statusText[g.status],
+        g.price?.source || "",
+        g.price?.fixed
+          ? "固定 1 USD"
+          : g.price?.at
+            ? new Date(g.price.at).toISOString()
+            : "",
+      ]),
+    ];
+  }
+  download("返佣账本-当前筛选.csv", encodeCsv(rows), "text/csv;charset=utf-8");
+}
+let workerDiagnostics = {};
+async function showDiagnostics() {
+  const disk = await storageDiagnostics(),
+    network = networkDiagnostics();
+  const mb = (bytes) =>
+    bytes == null ? "不可用" : (bytes / 1024 / 1024).toFixed(2) + " MiB";
+  const facts = [
+    ["流水记录", state.records.length.toLocaleString()],
+    ["待核对", model().pending.length.toLocaleString()],
+    ["浏览器存储", mb(disk.usage)],
+    ["可用配额", mb(disk.quota)],
+    ["当前 JS 堆（近似）", mb(performance.memory?.usedJSHeapSize)],
+    ["最近分类", model().ms.toFixed(1) + " ms"],
+    ["最近界面更新", (render.lastMs || 0).toFixed(1) + " ms"],
+  ];
+  $("diagnosticsBody").innerHTML =
+    '<div class="diagnosticgrid">' +
+    facts
+      .map(
+        ([name, value]) =>
+          `<div><span class="metadata">${esc(name)}</span><strong>${esc(value)}</strong></div>`,
+      )
+      .join("") +
+    "</div><h3>本次运行请求</h3>" +
+    [...new Set([...Object.keys(network), ...Object.keys(workerDiagnostics)])]
+      .map((provider) => {
+        const a = network[provider] || {},
+          b = workerDiagnostics[provider] || {};
+        return `<p>${esc(provider)}：请求 ${(a.requests || 0) + (b.requests || 0)} · 缓存命中 ${(a.cacheHits || 0) + (b.cacheHits || 0)} · 重试 ${(a.retries || 0) + (b.retries || 0)} · 错误 ${(a.errors || 0) + (b.errors || 0)}</p>`;
+      })
+      .join("");
+  if (!$("diagnostics").open) $("diagnostics").showModal();
+}
+
+for (const menu of document.querySelectorAll("[data-filter]")) {
+  menu.addEventListener("change", (event) => {
+    if (event.target.type !== "checkbox") return;
+    const select = $(menu.dataset.filter);
+    for (const option of select.options)
+      if (option.value === event.target.value)
+        option.selected = event.target.checked;
+    page = 1;
+    persistFilters();
+    render();
+  });
+  menu
+    .querySelector(".optionsearch")
+    ?.addEventListener("input", drawFilterMenus);
+  menu.addEventListener("toggle", () => {
+    if (menu.open)
+      for (const other of document.querySelectorAll("[data-filter]"))
+        if (other !== menu) other.open = false;
+  });
+}
+document.addEventListener("click", (event) => {
+  for (const menu of document.querySelectorAll("[data-filter]"))
+    if (!menu.contains(event.target)) menu.open = false;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape")
+    for (const menu of document.querySelectorAll("[data-filter]"))
+      if (menu.open) {
+        menu.open = false;
+        menu.querySelector("summary").focus();
+      }
+});
+$("setupButton").onclick = settings;
+$("saveSettings").onclick = saveSettings;
+$("chainSearch").oninput = drawChoices;
+$("showAllNetworks").onchange = drawChoices;
+$("chainChoices").onchange = (event) => {
+  const id = event.target.dataset.chain;
+  if (id)
+    settingsDraft = event.target.checked
+      ? [...new Set([...settingsDraft, id])]
+      : settingsDraft.filter((x) => x !== id);
+};
+$("selectCommon").onclick = () => {
+  settingsDraft = [...COMMON_CHAINS];
+  drawChoices();
+};
+$("clearCredentials").onclick = () => {
+  localStorage.removeItem("rebate-credentials-v1");
+  sessionStorage.removeItem("rebate-credentials-v1");
+  keys = emptyKeys();
+  for (const id of [
+    ...Object.keys(credentialFields),
+    "xlayerKey",
+    "xlayerSecret",
+    "xlayerPassphrase",
+  ])
+    $(id).value = "";
+  toast("本设备凭证已清除，历史保留");
+};
+$("syncButton").onclick = () =>
+  sync(
+    null,
+    !busy &&
+      coverage().some((c) => ["error", "paused", "running"].includes(c.status)),
+  );
+$("retryButton").onclick = () => sync(null, true);
+$("coverageButton").onclick = () => {
+  renderCoverage();
+  $("coverageDialog").showModal();
+};
+$("coverageBody").onclick = (event) => {
+  const button = event.target.closest("[data-sync-chain]");
+  if (button) {
+    $("coverageDialog").close();
+    sync(button.dataset.syncChain);
+  }
+};
+$("filterToggle").onclick = () => {
+  const open = $("filters").classList.toggle("expanded");
+  $("filterToggle").setAttribute("aria-expanded", String(open));
+};
+let searchTimer;
+$("search").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    page = 1;
+    persistFilters();
+    render();
+  }, 180);
+};
+for (const id of ["minimumUsd", "minimumField", "sortBy"])
+  $(id).onchange = () => {
+    page = 1;
+    persistFilters();
+    render();
+  };
+$("resetFilters").onclick = () => {
+  $("search").value = "";
+  $("minimumUsd").value = "0";
+  for (const id of [
+    "chainFilter",
+    "statusFilter",
+    "assetFilter",
+    "tokenFilter",
+    "directionFilter",
+  ])
+    for (const option of $(id).options) option.selected = false;
+  page = 1;
+  persistFilters();
+  render();
+};
+function switchView(next) {
+  view = next;
+  page = 1;
+  render();
+}
+$("ledgerTab").onclick = () => switchView($("ledgerView").value);
+$("reviewTab").onclick = () => switchView($("reviewView").value);
+$("ledgerView").onchange = () => switchView($("ledgerView").value);
+$("reviewView").onchange = () => switchView($("reviewView").value);
+for (const tab of [$("ledgerTab"), $("reviewTab")])
+  tab.onkeydown = (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const target =
+        event.key === "Home"
+          ? $("ledgerTab")
+          : event.key === "End"
+            ? $("reviewTab")
+            : tab === $("ledgerTab")
+              ? $("reviewTab")
+              : $("ledgerTab");
+      target.focus();
+      target.click();
+    }
+  };
+$("prev").onclick = () => {
+  page--;
+  render();
+};
+$("next").onclick = () => {
+  page++;
+  render();
+};
+$("refreshPrices").onclick = () => refreshPrices(true);
+$("recheckPending").onclick = () => recheck();
+$("auditConfirmed").onclick = () => {
+  $("settings").close();
+  recheck(null, "confirmed");
+};
+$("recheckResults").onclick = showRecheckReport;
+$("recheckResultFilter").onchange = () => {
+  reportPage = 1;
+  showRecheckReport();
+};
+$("reportPrev").onclick = () => {
+  reportPage--;
+  showRecheckReport();
+};
+$("reportNext").onclick = () => {
+  reportPage++;
+  showRecheckReport();
+};
+$("retryRecheckFailures").onclick = () => {
+  const ids = new Set(
+    state.lastRecheck.entries
+      .filter((e) =>
+        ["failed", "missing", "cancelled", "queued"].includes(e.status),
+      )
+      .map((e) => e.key),
+  );
+  $("forceRefresh").checked = true;
+  $("recheckReport").close();
+  recheck(ids, "confirmed");
+};
+$("exportRecheckResults").onclick = () =>
+  download("核验结果.json", JSON.stringify(state.lastRecheck, null, 2));
+$("recheckRows").onclick = (event) => {
+  const b = event.target.closest("[data-recheck-detail]");
+  if (b)
+    showRecords(
+      (model().byTx.get(b.dataset.recheckDetail) || []).map((r) => r.id),
+    );
+};
+$("tableArea").onclick = (event) => {
+  const r = event.target.closest("[data-record]"),
+    g = event.target.closest("[data-group]"),
+    expand = event.target.closest("[data-expand]");
+  if (r) showRecords([r.dataset.record]);
+  if (g)
+    showRecords(
+      model().groups.find((row) => row.key === g.dataset.group)?.ids || [],
+    );
+  if (expand) {
+    const key = expand.dataset.expand;
+    expandedAddresses.has(key)
+      ? expandedAddresses.delete(key)
+      : expandedAddresses.add(key);
+    render();
+  }
+};
+$("detailBody").onsubmit = (event) => {
+  const form = event.target.closest("[data-decision]");
+  if (!form) return;
+  event.preventDefault();
+  applyDecision(form.dataset.decision, {
+    kind: form.elements.kind.value,
+    trader: form.elements.trader.value.trim(),
+    reason: form.elements.reason.value.trim(),
+  });
+};
+$("detailBody").onclick = async (event) => {
+  const undo = event.target.closest("[data-undo]"),
+    keep = event.target.closest("[data-keep]"),
+    trust = event.target.closest("[data-trust]"),
+    sample = event.target.closest("[data-case]");
+  if (undo && !busy) {
+    const next = { ...state.decisions };
+    delete next[undo.dataset.undo];
+    await commitDecisions(next, "已撤销人工判断");
+  }
+  if (keep)
+    await applyDecision(keep.dataset.keep, {
+      kind: "pending",
+      trader: "",
+      reason: "人工保留此笔记录",
+      keep: true,
+    });
+  if (trust && !busy) {
+    const row = model().byId.get(trust.dataset.trust);
+    try {
+      updateAllowlist([
+        ...assetAllowlist,
+        { chain: row.chain, asset: row.asset },
+      ]);
+      render();
+      renderDetails();
+      toast("合约已加入名单，归属仍须独立核验");
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+  if (sample) {
+    const r = model().byId.get(sample.dataset.case);
+    const text = [
+      "核对案例",
+      "网络：" + chainBy(r.chain).name,
+      "方向：" + r.direction,
+      "金额：" + format(r.raw, r.decimals) + " " + r.symbol,
+      "合约：" + r.asset,
+      "日志发送：" + r.from,
+      "日志接收：" + r.to,
+      "交易：" + r.hash,
+      "链接：" + link(r),
+      "原因：" + (r.spamReason || r.reviewReason || r.evidence || ""),
+      "实际用途：",
+      "归属地址：",
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("案例已复制");
+    } catch {
+      toast("复制失败，请手动复制详情");
+    }
+  }
+};
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-copy]");
+  if (button) {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      toast("已复制");
+    } catch {
+      toast("无法访问剪贴板，可在详情中选择文本复制");
+    }
+  }
+});
+$("backupCenterButton").onclick = () => $("backupCenter").showModal();
+$("backupButton").onclick = () => exportBackup("history");
+$("exportSettings").onclick = () => exportBackup("settings");
+$("exportButton").onclick = exportCsv;
+$("importFile").onchange = (event) => importBackup(event, "history");
+$("importSettings").onchange = (event) => importBackup(event, "settings");
+$("importAllowlist").onchange = (event) => importBackup(event, "allowlist");
+$("confirmImport").onclick = commitImport;
+$("importPreview").addEventListener("close", () => {
+  importCandidate = null;
+});
+$("exportAllowlist").onclick = () =>
+  download(
+    "合约白名单.json",
+    JSON.stringify(
+      { format: "rebate-allowlist", version: 1, assets: assetAllowlist },
+      null,
+      2,
+    ),
+  );
+$("diagnosticsButton").onclick = showDiagnostics;
+window.addEventListener("pagehide", () => {
+  saver.flush().catch(() => {});
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(renderTimer);
+    saver.flush().catch(() => {});
+  } else {
+    render();
+    refreshPrices();
+  }
+});
+window.addEventListener("storage", (event) => {
+  if (event.key === "rebate-price-cache-v2") {
+    prices = { ...prices, ...safeRead(localStorage, event.key, {}) };
+    scheduleRender();
+  }
+});
+setInterval(
+  () => {
+    if (!document.hidden) refreshPrices();
+  },
+  5 * 60 * 1000,
+);
+setInterval(() => {
+  if (
+    !document.hidden &&
+    model().groups.some((g) => g.asset !== "native" || g.chain)
+  )
+    scheduleRender();
+}, 60000);
+if (document.modelContext?.registerTool) {
+  try {
+    document.modelContext.registerTool({
+      name: "read_rebate_ledger",
+      title: "读取返佣核对结果",
+      description: "只读当前已识别账目与覆盖范围，不触发链上操作。",
+      inputSchema: {
+        type: "object",
+        properties: { chain: { type: "string" } },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      execute(input) {
+        if (
+          !input ||
+          Object.keys(input).some((k) => k !== "chain") ||
+          (input.chain !== undefined && !chainMap.has(input.chain))
+        )
+          throw Error("无效网络参数");
+        return {
+          rows: model().groups.filter(
+            (g) => !input.chain || g.chain === input.chain,
+          ),
+          pending: model().pending.length,
+          coverage: state.coverage,
+          updated: state.updated,
+        };
+      },
+    });
+  } catch {}
+}
+if (migrated) save();
 render();
-
-save();refreshPrices();setInterval(refreshPrices,5*60*1000);setInterval(()=>render(),60000);
-
-import './install.mjs';
-
-$('exportAllowlist').onclick=()=>download('合约白名单.json',JSON.stringify({format:'rebate-allowlist',version:1,assets:assetAllowlist},null,2));
-$('importAllowlist').onchange=async e=>{try{const f=e.target.files[0];if(!f)return;if(f.size>2*1024*1024)throw Error('白名单文件过大');const d=JSON.parse(await f.text());if(d.format!=='rebate-allowlist'||d.version!==1)throw Error('不是白名单备份');$('assetAllowlist').value=formatAllowlist(normalizeAllowlist(d.assets));toast('白名单已填入，保存后生效')}catch(e){toast(e.message)}finally{e.target.value=''}};
+refreshPrices();
+import { setUpdateGuard } from "./install.mjs";
+setUpdateGuard(async () => {
+  if (busy || backupBusy) {
+    toast("请先暂停当前任务，再更新应用");
+    return false;
+  }
+  try {
+    await saver.flush();
+    return true;
+  } catch {
+    toast("请先导出备份；本机保存尚未完成");
+    return false;
+  }
+});

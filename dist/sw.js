@@ -1,6 +1,27 @@
-const CACHE='rebate-shell-v11';
-const FILES=['./','./index.html','./style.css','./theme.js','./serif.ttf','./mono.ttf','./app.mjs','./recheck.mjs','./recheck-worker.mjs','./api.mjs','./ledger.mjs','./solana-classification.mjs','./stablecoins.mjs','./allowlist.mjs','./asset-allowlist.json','./history.mjs','./storage.mjs','./install.mjs','./valuation.mjs','./prices.mjs','./extended-api.mjs','./xlayer-api.mjs','./chains.json','./routers.json','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
-self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting())));
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('rebate-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
-// Only cache the static app shell. Never cache keys, API requests or responses.
-self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(e.request.method!=='GET'||u.origin!==self.location.origin||u.search||!FILES.some(f=>new URL(f,self.location.href).pathname===u.pathname))return;e.respondWith(fetch(e.request).then(r=>{if(r.ok){const copy=r.clone();e.waitUntil(caches.open(CACHE).then(c=>c.put(e.request,copy)))}return r}).catch(()=>caches.match(e.request)))});
+const CACHE='rebate-shell-__CACHE_VERSION__';
+const FILES=__SHELL_FILES__;
+self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES))));
+// Activate only when old clients close or explicitly request the ready version.
+self.addEventListener('message',event=>{if(event.data?.type==='ACTIVATE_UPDATE')self.skipWaiting()});
+async function pruneOldReleases(){
+ // Another tab may still run an older module graph. Its lazy workers need that
+ // graph until it refreshes; prune when one remaining window navigates anew.
+ if((await self.clients.matchAll({type:'window',includeUncontrolled:true})).length>1)return;
+ await Promise.all((await caches.keys()).filter(key=>key.startsWith('rebate-shell-')&&key!==CACHE).map(key=>caches.delete(key)));
+}
+self.addEventListener('activate',event=>event.waitUntil(pruneOldReleases().then(()=>self.clients.claim())));
+self.addEventListener('fetch',event=>{
+ const url=new URL(event.request.url),assetRelease=url.pathname.match(/^\/assets\/([a-f0-9]{16})\//)?.[1];
+ if(event.request.method!=='GET'||url.origin!==self.location.origin||url.search||(!assetRelease&&!FILES.includes(url.pathname)))return;
+ event.respondWith((async()=>{
+  const wanted=assetRelease?'rebate-shell-'+assetRelease:CACHE;
+  // Do not create arbitrary caches from a caller-supplied version path.
+  const existing=await caches.keys(),cache=existing.includes(wanted)?await caches.open(wanted):null;
+  // HTML, catalogs, modules and fonts were installed together. Never replace a
+  // release's shell with a newer network index, including after a failed update.
+  const cached=cache&&await cache.match(event.request);
+  if(!assetRelease&&event.request.mode==='navigate')event.waitUntil(pruneOldReleases());
+  if(cached)return cached;
+  return fetch(event.request);
+ })());
+});

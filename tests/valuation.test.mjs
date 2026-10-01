@@ -24,10 +24,10 @@ test('legacy three-word commission events decode exact receipt amount for select
  assert.equal(decodeFeeLogs([log],{id:'59144',symbol:'ETH',decimals:18},tx)[0].raw,'94037553857086');configureWallets('0x'+'4'.repeat(40),'');assert.equal(decodeFeeLogs([log],{id:'59144',symbol:'ETH',decimals:18},tx).length,0);
 });
 test('price relay matches exact base contract and rejects low liquidity / wrong-chain ticker',async()=>{
- const asset='0x'+'1'.repeat(40);const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test'},body:JSON.stringify({assets:[{chain:'1',asset}]})});
+ const asset='0x'+'1'.repeat(40);const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test','Content-Type':'application/json'},body:JSON.stringify({assets:[{chain:'1',asset}]})});
  const result=await handlePrices(req,async()=>Response.json([{chainId:'bsc',baseToken:{address:asset},priceUsd:'999',liquidity:{usd:1e6}},{chainId:'ethereum',baseToken:{address:asset},priceUsd:'2',liquidity:{usd:20000}}]));assert.equal((await result.json()).prices['1:'+asset].usd,'2');
 });
 test('native price fallback succeeds when primary provider rate limits hosted IPs',async()=>{
- const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test'},body:JSON.stringify({assets:[{chain:'1',asset:'native'},{chain:'8453',asset:'native'}]})});
+ const req=new Request('https://ledger.test/api/prices',{method:'POST',headers:{Origin:'https://ledger.test','Content-Type':'application/json'},body:JSON.stringify({assets:[{chain:'1',asset:'native'},{chain:'8453',asset:'native'}]})});
  const r=await handlePrices(req,async url=>url.includes('coingecko')?new Response('',{status:429}):Response.json([{chainId:'ethereum',baseToken:{address:'0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'},priceUsd:'2678.2',liquidity:{usd:1e6}}]));const data=await r.json();assert.deepEqual(data.errors,[]);assert.equal(data.prices['1:native'].usd,'2678.2');assert.equal(data.prices['8453:native'].usd,'2678.2');
 });

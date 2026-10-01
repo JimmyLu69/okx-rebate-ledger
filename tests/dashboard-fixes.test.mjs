@@ -23,8 +23,8 @@ test('Blockscout relay uses same-origin and fixed read-only endpoints without le
 test('automatic accounting recognizes proven fees and OKX Solana, offsets payments only to known invitees',async()=>{
  const {autoAccount,SOL}=await import('../dist/ledger.mjs');
  const solTrader='6rqBjSVY2Av7r6geJpZoJehaLWtHJKPBQZBzi2hLyBae';
- const sol={...seed,id:'solfee',chain:'solana',asset:'native',symbol:'SOL',decimals:9,from:solTrader,to:SOL,trader:solTrader,suggestedTrader:solTrader,source:'OKX_DEX_ROUTER',kind:'pending',raw:'100'};
- const records=[{...seed,id:'event',kind:'pending',feeEvent:true},{...seed,id:'underlying',kind:'ignore',supersededBy:['event']},{...seed,id:'paid',txSender:seed.to,from:seed.to,to:seed.trader,direction:'out',kind:'pending',raw:'5000000000000'},sol,{...sol,id:'solpaid',from:SOL,to:solTrader,direction:'out',raw:'40'},{...sol,id:'randomdeposit',source:'UNKNOWN',raw:'9999'},{...sol,id:'vaultpayment',from:'11111111111111111111111111111111',raw:'9999'},{...seed,id:'unrelatedout',from:seed.to,to:'0x'+'9'.repeat(40),direction:'out',kind:'pending'}];
+ const sol={...seed,solanaCommission:true,attributionVerified:true,ownerVerified:true,attributionMethod:'okx-swap-v3-source-owner',id:'solfee',chain:'solana',asset:'native',symbol:'SOL',decimals:9,from:solTrader,to:SOL,trader:solTrader,suggestedTrader:solTrader,source:'OKX_DEX_ROUTER',kind:'pending',raw:'100'};
+ const records=[{...seed,id:'event',kind:'pending',feeEvent:true,protocol:'legacy-router',attributionVerified:true,receiptMatched:true},{...seed,id:'underlying',kind:'ignore',supersededBy:['event']},{...seed,id:'paid',paymentAuthorized:true,directTransfer:true,txSender:seed.to,from:seed.to,to:seed.trader,direction:'out',kind:'pending',raw:'5000000000000'},sol,{...sol,id:'solpaid',paymentAuthorized:true,directTransfer:true,txSender:SOL,from:SOL,to:solTrader,direction:'out',raw:'40'},{...sol,id:'randomdeposit',solanaCommission:false,source:'UNKNOWN',raw:'9999'},{...sol,id:'vaultpayment',solanaCommission:false,from:'11111111111111111111111111111111',raw:'9999'},{...seed,id:'unrelatedout',from:seed.to,to:'0x'+'9'.repeat(40),direction:'out',kind:'pending'}];
  const accounted=autoAccount(records),groups=summarize(accounted);
  assert.equal(groups.find(g=>g.chain==='4663').remaining,'10000000000000');assert.equal(groups.find(g=>g.chain==='solana').remaining,'60');
  assert.equal(accounted.filter(r=>r.needsReview&&r.kind==='pending').length,3);assert.equal(records[0].kind,'pending');assert.equal(accounted.find(r=>r.id==='underlying').kind,'ignore');
@@ -32,7 +32,7 @@ test('automatic accounting recognizes proven fees and OKX Solana, offsets paymen
 test('unmatched history stays pending, legacy automatic exclusion is restored, explicit decisions are preserved',async()=>{
  const {autoAccount,pendingReview}=await import('../dist/ledger.mjs');
  const incoming={...seed,id:'unmatched-in',kind:'pending',feeEvent:false,raw:'123'};
- const outgoing={...seed,id:'unmatched-out',txSender:seed.to,kind:'pending',direction:'out',from:seed.to,to:'0x'+'9'.repeat(40),raw:'456'};
+ const outgoing={...seed,id:'unmatched-out',paymentAuthorized:true,directTransfer:true,txSender:seed.to,kind:'pending',direction:'out',from:seed.to,to:'0x'+'9'.repeat(40),raw:'456'};
  const legacy={...incoming,id:'legacy-auto',kind:'ignore',autoExcluded:true};
  const explicit={...incoming,id:'explicit-ignore',kind:'ignore',reviewed:true};
  const duplicate={...incoming,id:'replaced',kind:'ignore',supersededBy:[seed.id]};
@@ -41,5 +41,5 @@ test('unmatched history stays pending, legacy automatic exclusion is restored, e
  const pending=pendingReview(input);assert.deepEqual(pending.map(r=>r.id),['unmatched-in','unmatched-out','legacy-auto']);
  assert.equal(pending[1].raw,'456');assert.ok(pending.every(r=>r.reviewReason));assert.equal(summarize(autoAccount(input)).length,0);
  assert.equal(legacy.kind,'ignore');assert.equal(autoAccount(input).find(r=>r.id==='explicit-ignore').kind,'ignore');
- const matched=autoAccount([...input, {...seed,trader:outgoing.to}]);assert.equal(matched.find(r=>r.id===outgoing.id).kind,'refund');
+ const matched=autoAccount([...input, {...seed,feeEvent:true,protocol:'legacy-router',attributionVerified:true,receiptMatched:true,trader:outgoing.to}]);assert.equal(matched.find(r=>r.id===outgoing.id).kind,'refund');
 });

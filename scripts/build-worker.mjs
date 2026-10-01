@@ -1,20 +1,26 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-const files = ['index.html', 'style.css', 'app.mjs','recheck.mjs','recheck-worker.mjs', 'api.mjs', 'ledger.mjs','solana-classification.mjs','stablecoins.mjs','allowlist.mjs','asset-allowlist.json', 'valuation.mjs', 'prices.mjs', 'extended-api.mjs', 'xlayer-api.mjs', 'chains.json', 'routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'];
-const assets = {};
-for (const file of files) assets['/' + file] = await readFile(new URL('../dist/' + file, import.meta.url), /\.(png|ttf)$/.test(file)?'base64':'utf8');
-const core = await readFile(new URL('../dist/stablecoins.mjs',import.meta.url),'utf8')+'\n'+await readFile(new URL('../server/linea-proxy.mjs',import.meta.url),'utf8')+'\n'+await readFile(new URL('../dist/prices.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/prices-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/xlayer-proxy.mjs', import.meta.url), 'utf8') + '\n' + await readFile(new URL('../server/blockscout-proxy.mjs', import.meta.url), 'utf8');
-await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true });
-await writeFile(new URL('../dist/server/index.js', import.meta.url), core.replace("import {fixedUsdPrice} from './stablecoins.mjs';",'').replace("import {lookupPrices} from '../dist/prices.mjs';",'') + '\nconst assets = ' + JSON.stringify(assets) + `;
-export default { async fetch(request) {
-  const url = new URL(request.url);
-  if (url.pathname === '/api/linea') return handleLinea(request);
-  if (url.pathname === '/api/prices') return handlePrices(request);
-  if (url.pathname === '/api/blockscout') return handleBlockscout(request);
-  if (url.pathname === '/api/xlayer') return handleXLayer(request);
-  if (!['GET','HEAD'].includes(request.method)) return new Response('Method not allowed', {status:405});
-  const path = url.pathname === '/' ? '/index.html' : url.pathname;
-  if (!Object.hasOwn(assets,path)) return new Response('Not found',{status:404});
-  const type = path.endsWith('.ttf') ? 'font/ttf' : path.endsWith('.txt') ? 'text/plain' : path.endsWith('.png') ? 'image/png' : path.endsWith('.webmanifest') ? 'application/manifest+json' : path.endsWith('.html') ? 'text/html' : path.endsWith('.css') ? 'text/css' : path.endsWith('.json') ? 'application/json' : 'text/javascript';
-  return new Response(request.method === 'HEAD' ? null : /\.(png|ttf)$/.test(path) ? Uint8Array.from(atob(assets[path]),c=>c.charCodeAt(0)) : assets[path], {headers:{'Content-Type':type+'; charset=utf-8','Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
+import { mkdir, writeFile } from "node:fs/promises";
+import { buildAssets } from "./assets.mjs";
+const { output } = await buildAssets();
+const assets = Object.fromEntries(
+  [...output].map(([path, bytes]) => [path, bytes.toString("base64")]),
+);
+await mkdir(new URL("../dist/server/", import.meta.url), { recursive: true });
+await writeFile(
+  new URL("../dist/server/index.js", import.meta.url),
+  `
+import {handleLinea} from '../../server/linea-proxy.mjs';
+import {handleBlockscout} from '../../server/blockscout-proxy.mjs';
+import {handleXLayer} from '../../server/xlayer-proxy.mjs';
+import {handlePrices} from '../../server/prices-proxy.mjs';
+const assets=${JSON.stringify(assets)};
+export default {async fetch(request){
+  const url=new URL(request.url),handlers={'/api/linea':handleLinea,'/api/blockscout':handleBlockscout,'/api/xlayer':handleXLayer,'/api/prices':handlePrices};
+  if(handlers[url.pathname])return handlers[url.pathname](request);
+  if(!['GET','HEAD'].includes(request.method))return new Response('Method not allowed',{status:405});
+  const path=url.pathname==='/'?'/index.html':url.pathname;
+  if(!Object.hasOwn(assets,path))return new Response('Not found',{status:404});
+  const type=path.endsWith('.ttf')?'font/ttf':path.endsWith('.woff2')?'font/woff2':path.endsWith('.png')?'image/png':path.endsWith('.html')?'text/html':path.endsWith('.css')?'text/css':path.endsWith('.json')||path.endsWith('.webmanifest')?'application/json':path.endsWith('.txt')?'text/plain':'text/javascript';
+  return new Response(request.method==='HEAD'?null:Uint8Array.from(atob(assets[path]),c=>c.charCodeAt(0)),{headers:{'Content-Type':type,'Cache-Control':path.startsWith('/assets/')?'public, max-age=31536000, immutable':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'}});
 }};
-`);
+`,
+);

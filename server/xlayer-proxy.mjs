@@ -1,3 +1,4 @@
+import {readJsonLimited,onlyKeys} from './safety.mjs';
 const ENDPOINTS = new Set(['address/normal-transaction-list-multi', 'address/internal-transaction-list', 'address/token-transaction-list', 'transaction/internal-transaction-detail']);
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 export function validateQuery(input) {
@@ -36,9 +37,10 @@ export async function handleXLayer(request, fetcher = fetch) {
   if (Number(request.headers.get('Content-Length') || 0) > 16384) return reply(413, { message: '请求过大' });
   let stage='parse', secrets=[];
   try {
-    const body = await request.text(); if (body.length > 16384) return reply(413, { message: '请求过大' });
-    const input = JSON.parse(body), creds = input.credentials;
-    if (!creds || ['key', 'secret', 'passphrase'].some(k => typeof creds[k] !== 'string' || !creds[k].length || creds[k].length > 512 || /[\r\n]/.test(creds[k]))) return reply(400, { message: '请填写三项 OKX 开发者凭证' });
+    const input = await readJsonLimited(request,16384);
+    if(!onlyKeys(input,['endpoint','params','credentials']))return reply(400,{message:'无效的只读历史查询'});
+    const creds = input.credentials;
+    if (!onlyKeys(creds,['key','secret','passphrase']) || ['key', 'secret', 'passphrase'].some(k => typeof creds[k] !== 'string' || !creds[k].length || creds[k].length > 512 || /[\r\n]/.test(creds[k]))) return reply(400, { message: '请填写三项 OKX 开发者凭证' });
     secrets=Object.values(creds);stage='validate';
     const path = validateQuery(input), timestamp = new Date().toISOString();
     stage='sign';
@@ -51,8 +53,8 @@ export async function handleXLayer(request, fetcher = fetch) {
     if (upstream.status === 402) return reply(402, { message: '免费额度不可用，查询已停止；不会自动付费' });
     if (upstream.status === 429) return reply(429, { message: '查询限流，请稍后继续' });
     if (!upstream.ok) return reply(upstream.status === 401 || upstream.status === 403 ? 401 : 502, { message: 'OKX 查询未通过，请检查凭证、权限或免费额度' });
-    const result = await upstream.json();
+    const result = await readJsonLimited(upstream,4*1024*1024);
     if (String(result.code) !== '0' || !Array.isArray(result.data)) return reply(422, { message: 'OKX 未返回成功数据，请检查权限、免费额度和本机时间' });
     return reply(200, { data: result.data });
-  } catch(e) { let msg=String(e.message||'');for(const secret of secrets)if(secret)msg=msg.split(secret).join('[已隐藏]');msg=msg.replace(/https?:\/\/[^\s]+/g,'[接口地址]').slice(0,180);return reply(stage==='validate'||stage==='parse'?400:502,{message:`OKX ${stage} ${e.name}: ${msg}`}); }
+  } catch(e) { if(stage==='parse'&&e.status!==413)return reply(400,{message:'请求不是有效的只读查询 JSON'});if(e.status===413)return reply(413,{message:'请求或数据源响应过大'});let msg=String(e.message||'');for(const secret of secrets)if(secret)msg=msg.split(secret).join('[已隐藏]');msg=msg.replace(/https?:\/\/[^\s]+/g,'[接口地址]').slice(0,180);return reply(stage==='validate'||stage==='parse'?400:502,{message:`OKX ${stage} ${e.name}: ${msg}`}); }
 }

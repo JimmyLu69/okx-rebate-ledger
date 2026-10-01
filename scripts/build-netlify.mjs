@@ -1,4 +1,13 @@
-import {mkdir,copyFile,rm} from 'node:fs/promises';
-await rm(new URL('../public/',import.meta.url),{recursive:true,force:true});
-await mkdir(new URL('../public/',import.meta.url));
-for(const f of ['index.html','style.css','app.mjs','recheck.mjs','recheck-worker.mjs','api.mjs','ledger.mjs','solana-classification.mjs','stablecoins.mjs','allowlist.mjs','asset-allowlist.json','valuation.mjs','prices.mjs','extended-api.mjs','xlayer-api.mjs','chains.json','routers.json','history.mjs','storage.mjs','theme.js','serif.ttf','mono.ttf','font-licenses.txt','install.mjs','sw.js','manifest.webmanifest','icon-192.png','icon-512.png'])await copyFile(new URL('../dist/'+f,import.meta.url),new URL('../public/'+f,import.meta.url));
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildAssets } from "./assets.mjs";
+const destination = fileURLToPath(new URL("../public/", import.meta.url));
+await rm(destination, { recursive: true, force: true });
+const { output, version } = await buildAssets();
+for (const [file, bytes] of output) {
+  const target = path.join(destination, file);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, bytes);
+}
+console.log("Static build " + version + " · explicit asset manifest only");

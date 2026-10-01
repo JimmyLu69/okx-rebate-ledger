@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {autoAccount,summarize,spamRecords,pendingReview,mergeRecords} from '../dist/ledger.mjs';
 const token='0x'+'4'.repeat(40),other='0x'+'5'.repeat(40);
-const fee={...seed,asset:token,symbol:'USD',decimals:6,raw:'7905239'};
-const payment={...fee,id:'paid',kind:'pending',direction:'out',from:seed.to,to:seed.trader,txSender:seed.to,raw:'7900000'};
+const fee={...seed,feeEvent:true,protocol:'legacy-router',attributionVerified:true,receiptMatched:true,asset:token,symbol:'USD',decimals:6,raw:'7905239'};
+const payment={...fee,paymentAuthorized:true,directTransfer:true,id:'paid',kind:'pending',direction:'out',from:seed.to,to:seed.trader,txSender:seed.to,raw:'7900000'};
 test('refund requires exact chain contract and trader, and verified initiating wallet',()=>{
  const rows=autoAccount([fee,payment,{...payment,id:'fake',asset:other},{...payment,id:'otherchain',chain:'8453'},{...payment,id:'thirdparty',txSender:other},{...payment,id:'unknown',txSender:undefined}]);
  assert.equal(rows.find(r=>r.id==='paid').kind,'refund');

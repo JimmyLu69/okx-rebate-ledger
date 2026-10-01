@@ -28,7 +28,7 @@ test('ERC20 receipt logs use real indices, exact raw amounts, exclude ERC721 sha
 });
 test('manual confirmation before receipt verification cannot double-count the commission', () => {
   const transfer = { ...seed, id: 'underlying-transfer', kind: 'commission', reviewed: true };
-  const rows = reconcileFeeTransfers([{ ...transfer, reviewed: false, kind: 'pending' }], [{ ...seed }]);
+  const rows = reconcileFeeTransfers([{ ...transfer, reviewed: false, kind: 'pending' }], [{ ...seed, feeEvent:true,protocol:'legacy-router',attributionVerified:true,receiptMatched:true }]);
   const merged = mergeRecords([transfer], rows);
   assert.equal(merged[0].kind, 'commission');
   assert.deepEqual(merged[0].supersededBy, [seed.id]);
