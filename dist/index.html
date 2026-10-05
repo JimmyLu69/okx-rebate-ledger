@@ -37,7 +37,7 @@
       </header>
       <section class="overview" aria-label="账本概览">
         <div class="balancehero">
-          <p>当前筛选 · 需处理金额 <span>USD</span></p>
+          <p>当前筛选 · 已核实待返金额 <span>USD</span></p>
           <strong id="heroAmount">—</strong>
           <p id="heroDetail">设置钱包后开始同步</p>
         </div>
@@ -57,6 +57,7 @@
         离线 · 可查看本机账目，联网后再同步
       </p>
       <p id="migrationNote" class="notice warning" hidden></p>
+      <div id="recoveryNotice" class="notice warning" hidden><p>历史读取异常，已保护原始数据。请先导出原始数据，再从备份恢复。</p><button id="recoveryButton" class="secondary">恢复与导出</button></div>
       <section class="mainpanel">
         <div class="paneltop">
           <nav class="tabs" aria-label="账本视图" role="tablist">
@@ -105,9 +106,9 @@
             aria-label="搜索地址、交易或币种"
             placeholder="搜索地址、交易或币种"
           /><select id="sortBy" aria-label="排序">
-            <option value="remaining">需处理金额 ↓</option>
-            <option value="due">应返总额 ↓</option>
-            <option value="paid">已返总额 ↓</option>
+            <option value="remaining">还需返还 ↓</option>
+            <option value="due">累计返佣 ↓</option>
+            <option value="paid">累计返还 ↓</option>
             <option value="address">地址 A–Z</option></select
           ><button id="resetFilters" class="textbutton">清空筛选</button>
         </div>
@@ -181,18 +182,19 @@
               value="0"
               aria-label="地址金额下限 USD" /></label
           ><select id="minimumField" aria-label="金额筛选口径">
-            <option value="remaining">需处理 USD</option>
-            <option value="due">应返总额 USD</option>
-            <option value="paid">已返总额 USD</option>
+            <option value="remaining">还需返还 USD</option>
+            <option value="due">累计返佣 USD</option>
+            <option value="paid">累计返还 USD</option>
           </select>
         </div>
+        <div id="filterChips" class="filterchips" aria-label="当前筛选条件"></div>
         <div class="listtools">
           <span id="filterSummary" class="metadata"></span>
           <div class="actions">
             <span id="priceStatus" class="metadata"></span
             ><button id="refreshPrices" class="textbutton">更新报价</button
             ><button id="recheckPending" class="secondary" hidden>
-              核验当前范围</button
+              重新核验</button
             ><button id="recheckResults" class="secondary" hidden>
               核验结果
             </button>
@@ -252,7 +254,7 @@
           id="toleranceEnabled"
           type="checkbox"
           checked
-        />忽略小额差额</label
+        />阈值内视为结清</label
       ><label class="field compact"
         >差额绝对值严格小于
         <input
@@ -266,17 +268,32 @@
         USD</label
       >
       <p class="metadata">
-        实际币数保留；忽略的差额不计入需处理金额。稳定币按固定 1 USD 记账。
+        实际差额保留，阈值内视为结清。名单内稳定币固定按 1 USD 记账。
       </p>
-      <h3>数据源</h3>
+      <h3>查询网络</h3>
+      <div class="actions">
+        <button id="selectCommon" type="button" class="secondary">
+          常用网络</button
+        ><label class="checkfield"
+          ><input id="showAllNetworks" type="checkbox" />显示其他网络</label
+        >
+      </div>
+      <input
+        id="chainSearch"
+        type="search"
+        placeholder="查找网络"
+        aria-label="查找网络"
+      />
+      <div id="chainChoices" class="chainchoices"></div>
+      <h3>数据源</h3><p id="providerHint" class="metadata"></p>
       <div class="fieldgrid">
-        <label class="field"
+        <label class="field" data-provider="blockscout"
           >Blockscout · 多条 EVM 链
           <a href="https://dev.blockscout.com/" target="_blank" rel="noreferrer"
             >创建 Key ↗</a
           ><input id="blockscoutKey" type="password" autocomplete="off"
         /></label>
-        <label class="field"
+        <label class="field" data-provider="helius"
           >Helius · Solana
           <a
             href="https://dashboard.helius.dev/"
@@ -285,7 +302,7 @@
             >创建 Key ↗</a
           ><input id="heliusKey" type="password" autocomplete="off"
         /></label>
-        <label class="field"
+        <label class="field" data-provider="nodereal"
           >NodeReal · BNB Chain
           <a
             href="https://dashboard.nodereal.io/"
@@ -294,7 +311,7 @@
             >创建 Key ↗</a
           ><input id="noderealKey" type="password" autocomplete="off"
         /></label>
-        <label class="field"
+        <label class="field" data-provider="etherscan"
           >Etherscan · Linea
           <a
             href="https://etherscan.io/myapikey"
@@ -304,7 +321,7 @@
           ><input id="etherscanKey" type="password" autocomplete="off"
         /></label>
       </div>
-      <details class="settingshelp">
+      <details class="settingshelp" data-provider="xlayer">
         <summary>OKX 开发者凭证 · X Layer</summary>
         <p class="metadata">
           <a
@@ -338,21 +355,6 @@
           <option value="session">仅本次会话</option>
         </select></label
       >
-      <h3>查询网络</h3>
-      <div class="actions">
-        <button id="selectCommon" type="button" class="secondary">
-          常用网络</button
-        ><label class="checkfield"
-          ><input id="showAllNetworks" type="checkbox" />显示其他网络</label
-        >
-      </div>
-      <input
-        id="chainSearch"
-        type="search"
-        placeholder="查找网络"
-        aria-label="查找网络"
-      />
-      <div id="chainChoices" class="chainchoices"></div>
       <details class="settingshelp">
         <summary>高级：历史范围与合约名单</summary>
         <label class="field"
@@ -387,13 +389,6 @@
               accept=".json,application/json"
           /></label>
         </div>
-        <button id="auditConfirmed" class="secondary">重新核验已入账记录</button
-        ><label class="checkfield"
-          ><input
-            id="forceRefresh"
-            type="checkbox"
-          />强制向数据源重新获取证据</label
-        >
       </details>
       <details class="settingshelp">
         <summary>隐私与数据</summary>
@@ -406,7 +401,7 @@
         </p>
       </details>
       <div class="dialogactions">
-        <button id="clearCredentials" class="textbutton">清除凭证</button
+        <span id="settingsStatus" class="metadata" role="status"></span><button id="clearCredentials" class="textbutton">清除凭证</button
         ><button id="saveSettings">保存设置</button>
       </div>
     </dialog>
@@ -419,14 +414,12 @@
         历史绑定当前钱包，保留扫描进度；CSV 用于查看，不用于恢复。
       </p>
       <div class="backupgroup">
-        <h3>钱包历史</h3>
+        <h3>恢复备份</h3><label class="filebutton">选择备份文件<input id="importFile" type="file" accept=".json,.gz,.rebate,application/json,application/gzip" /></label><p class="metadata">自动识别历史、设置和合约名单。</p>
+      </div>
+      <div class="backupgroup">
+        <h3>导出</h3>
         <div class="actions">
           <button id="backupButton">导出历史</button
-          ><label class="filebutton"
-            >导入历史<input
-              id="importFile"
-              type="file"
-              accept=".json,.gz,.rebate,application/json,application/gzip" /></label
           ><button id="exportButton" class="secondary">导出当前筛选 CSV</button>
         </div>
       </div>
@@ -434,7 +427,7 @@
         <h3>设置</h3>
         <div class="actions">
           <button id="exportSettings" class="secondary">导出已保存设置</button
-          ><label class="filebutton"
+          ><label class="filebutton" hidden
             >导入设置<input
               id="importSettings"
               type="file"
@@ -442,8 +435,7 @@
           /></label>
         </div>
         <label class="checkfield"
-          ><input id="includeCredentials" type="checkbox" />包含 API
-          凭证（建议加密）</label
+          ><input id="includeCredentials" type="checkbox" />包含 API 凭证（必须加密）</label
         >
       </div>
       <label class="field"
@@ -462,14 +454,16 @@
       <p class="metadata">
         加密口令不会保存，遗忘后无法恢复。导入只恢复文件内容，自动归属需核验；已有本机核验结果保留。
       </p>
+      <p id="backupError" class="notice warning" role="alert" hidden></p>
       <p id="backupProgress" role="status"></p>
+      <div class="actions"><button id="retryImport" class="secondary" hidden>重试此文件</button><button id="cancelBackup" class="secondary" hidden>取消处理</button><button id="exportRecovery" class="secondary" hidden>导出原始数据</button></div>
     </dialog>
     <dialog id="importPreview" aria-labelledby="importTitle">
       <form method="dialog" class="dialoghead">
         <h2 id="importTitle">导入预览</h2>
         <button class="iconbutton secondary" aria-label="取消导入">×</button>
       </form>
-      <p id="importSummary"></p>
+      <div id="importSummary"></div><p id="importError" class="notice warning" role="alert" hidden></p>
       <div class="dialogactions">
         <button id="confirmImport">确认合并历史</button>
       </div>
@@ -505,6 +499,14 @@
         ><span id="detailPageNum"></span
         ><button id="detailNext" class="secondary">下一页</button>
       </nav>
+    </dialog>
+    <dialog id="recheckTask" aria-labelledby="recheckTaskTitle">
+      <form method="dialog" class="dialoghead"><h2 id="recheckTaskTitle">重新核验</h2><button class="iconbutton secondary" aria-label="关闭核验任务">×</button></form>
+      <label class="field">范围<select id="recheckScope"><option value="pending">当前筛选中的待核对</option><option value="confirmed">当前筛选中的全部有效记录</option><option value="failures">上次失败与未处理</option></select></label>
+      <p id="recheckPlan" class="metadata"></p>
+      <details class="settingshelp"><summary>更多选项</summary><label class="checkfield"><input id="forceRefresh" type="checkbox" />跳过缓存重新核验</label><p class="metadata">将重新请求数据源，增加 API 用量。</p></details>
+      <button id="auditConfirmed" hidden>重新核验已入账记录</button>
+      <div class="dialogactions"><button id="startRecheck">开始核验</button></div>
     </dialog>
     <dialog id="recheckReport" aria-labelledby="recheckTitle">
       <form method="dialog" class="dialoghead">

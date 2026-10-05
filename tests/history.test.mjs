@@ -10,7 +10,7 @@ import { scanRanges } from "../dist/extended-api.mjs";
 import { scanEVM, scanSolana } from "../dist/api.mjs";
 import { nonceRanges } from "../dist/xlayer-api.mjs";
 const noop = () => {};
-test("completed streams reopen only the new range; interrupted streams keep exact cursors", () => {
+test("completed streams reopen a recent safety window; interrupted streams keep exact cursors", () => {
   const start = {
     tokentx: { complete: true, endBlock: 100 },
     transactions: { complete: true, highBlock: 500 },
@@ -18,7 +18,7 @@ test("completed streams reopen only the new range; interrupted streams keep exac
     pending: { complete: false, cursor: { index: 2 }, endBlock: 800 },
   };
   const next = incrementalStreams(start);
-  assert.equal(next.tokentx.minBlock, 101);
+  assert.equal(next.tokentx.minBlock, 36);
   assert.equal(next.transactions.stopBlock, 436);
   assert.equal(next.solana.until, "head");
   assert.deepEqual(next.pending, start.pending);
@@ -52,7 +52,7 @@ test("forward and reverse incremental windows cover new blocks once and never sc
     assert.equal(checkpoints.at(-1).complete, true);
   }
 });
-test("versioned wallet history round trip preserves cursors and rejects different wallet", () => {
+test("versioned wallet history resets untrusted cursors and rejects different wallet", () => {
   const wallets = { evm: seed.to, sol: "" },
     state = {
       version: 1,
@@ -75,7 +75,7 @@ test("versioned wallet history round trip preserves cursors and rejects differen
   assert.equal(restored.coverage["4663"].status, "stale");
   assert.deepEqual(
     restored.coverage["4663"].streams,
-    state.coverage["4663"].streams,
+    {},
   );
   assert.throws(
     () => restoreHistory(backup, { evm: seed.trader, sol: "" }, noop),

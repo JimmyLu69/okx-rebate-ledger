@@ -9,8 +9,10 @@ function to64(bytes){let raw='';for(let i=0;i<bytes.length;i+=8192)raw+=String.f
 function from64(text,max){if(typeof text!=='string'||text.length>Math.ceil(max/3)*4||text.length%4!==0||!/^[A-Za-z0-9+/]*={0,2}$/.test(text))throw Error('加密备份格式错误');let raw;try{raw=atob(text)}catch{throw Error('加密备份格式错误')}return Uint8Array.from(raw,c=>c.charCodeAt(0))}
 async function derive(password,salt,usage){const crypto=secureCrypto(),secret=passwordBytes(password);try{const base=await crypto.subtle.importKey('raw',secret,'PBKDF2',false,['deriveKey']);return await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:ITERATIONS,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,[usage])}finally{secret.fill(0)}}
 export function isEncryptedBackup(data){return data?.format===BACKUP_FORMAT}
-export async function encryptBackup(data,password){
- const crypto=secureCrypto(),plaintext=utf8.encode(JSON.stringify(data));if(plaintext.byteLength>MAX_BYTES)throw Error('备份超过 100MB，请缩小导出范围');
+export async function encryptBackup(data,password){return encryptBackupBytes(utf8.encode(JSON.stringify(data)),password)}
+export async function encryptBackupBytes(plaintext,password){
+ if(!(plaintext instanceof Uint8Array))throw Error('无效备份字节');
+ const crypto=secureCrypto();if(plaintext.byteLength>MAX_BYTES)throw Error('备份超过 100MB，请缩小导出范围');
  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12)),key=await derive(password,salt,'encrypt');
  try{const ciphertext=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:utf8.encode(JSON.stringify(metadata)),tagLength:128},key,plaintext));return {...metadata,salt:to64(salt),iv:to64(iv),data:to64(ciphertext)}}finally{plaintext.fill(0)}
 }

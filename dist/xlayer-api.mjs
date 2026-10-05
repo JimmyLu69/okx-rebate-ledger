@@ -175,7 +175,7 @@ export function xlayerNative(items, chain, tx) {
   }
   return rows;
 }
-export async function inspectXLayer(chain, hash, credentials, routers, signal) {
+export async function inspectXLayer(chain, hash, credentials, routers, signal, policy = {}) {
   return inspectExtended(
     chain,
     hash,
@@ -208,6 +208,7 @@ export async function inspectXLayer(chain, hash, credentials, routers, signal) {
       } while (page <= total);
       return xlayerNative(items, chain, tx);
     },
+    policy,
   );
 }
 

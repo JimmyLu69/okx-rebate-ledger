@@ -7,21 +7,19 @@ import { networkDiagnostics } from "./network.mjs";
 let current;
 const providerFor = (job) =>
   job.chain.id === "solana" ? "helius" : job.chain.provider || "blockscout";
+const MAX_BUFFERED = 60, LOW_WATER = 15;
 function finishIfReady() {
   const run = current;
-  if (!run || run.active || run.queue.length) return;
-  if (!run.ended && !run.controller.signal.aborted) {
-    if (!run.requested) {
-      run.requested = true;
-      self.postMessage({ type: "need-jobs" });
-    }
-    return;
+  if (!run) return;
+  const buffered = run.active + run.queue.length;
+  if (!run.ended && !run.controller.signal.aborted && buffered <= LOW_WATER && !run.requested) {
+    run.requested = true;
+    run.credit = Math.min(30, MAX_BUFFERED - buffered);
+    self.postMessage({type:"need-jobs",credit:run.credit,queued:run.queue.length,active:run.active});
   }
-  self.postMessage({
-    type: "done",
-    aborted: run.controller.signal.aborted,
-    diagnostics: networkDiagnostics(),
-  });
+  if (buffered || (!run.ended && !run.controller.signal.aborted)) return;
+  clearInterval(run.diagnosticTimer);
+  self.postMessage({type:"done",aborted:run.controller.signal.aborted,diagnostics:networkDiagnostics()});
   current = null;
 }
 function pump() {
@@ -106,8 +104,14 @@ self.onmessage = ({ data }) => {
   }
   if (data.type === "append") {
     if (current && !current.ended) {
+      const jobs = data.jobs || [];
+      if (!Array.isArray(jobs) || jobs.length > (current.credit || 30) || current.queue.length + current.active + jobs.length > MAX_BUFFERED) {
+        self.postMessage({type:"fatal",error:"核验队列超过上限"});
+        current.controller.abort();current.ended=true;current.queue=[];finishIfReady();return;
+      }
       current.requested = false;
-      current.queue.push(...(data.jobs || []));
+      current.credit = 0;
+      current.queue.push(...jobs);
       pump();
     }
     return;
@@ -121,6 +125,7 @@ self.onmessage = ({ data }) => {
   }
   if (data.type !== "start" || current) return;
   try {
+    if (!Array.isArray(data.jobs || []) || (data.jobs || []).length > MAX_BUFFERED) throw Error("核验队列超过上限");
     configureWallets(data.wallets.evm, data.wallets.sol);
     configureEvidenceCache({ force: !!data.forceRefresh });
     current = {
@@ -132,6 +137,9 @@ self.onmessage = ({ data }) => {
       keys: data.keys,
       routers: data.routers,
     };
+    current.diagnosticTimer = setInterval(() => {
+      if (current) self.postMessage({type:"diagnostics",diagnostics:networkDiagnostics()});
+    }, 1000);
     pump();
   } catch (e) {
     self.postMessage({ type: "fatal", error: e.message });

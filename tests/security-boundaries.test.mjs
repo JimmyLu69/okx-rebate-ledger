@@ -20,12 +20,12 @@ test('history report rejects executable numeric payload and discards unexpected 
  for(const key of ['before','after'])assert.throws(()=>validateRecheckReport({...report,entries:[{...report.entries[0],[key]:'<img src=x onerror=alert(1)>'}]}));
  const data=backup();data.state.lastRecheck={...report,before:'<svg onload=alert(1)>'};assert.throws(()=>validateHistoryBackup(data));
 });
-test('history external provenance requires recheck, preserves progress and separated human decisions',()=>{
+test('history external provenance requires recheck, resets untrusted progress and preserves separated human decisions',()=>{
  const b=backup();b.state.records[0].reviewed=true;b.state.records[0].receiptMatched=true;b.state.evil='dropped';b.state.decisions={[seed.id]:{kind:'commission',trader:seed.trader,reason:'人工恢复',updatedAt:'2026-10-01T00:00:00.000Z'}};
  const restored=validateHistoryBackup(b,{wallets:b.wallets}).state;
  assert.equal(restored.records[0].importedUnverified,true);assert.equal(restored.records[0].kind,'pending');assert.equal(restored.records[0].reviewed,undefined);assert.equal(restored.records[0].receiptMatched,true);
- assert.equal(restored.decisions[seed.id].kind,'commission');assert.equal(restored.coverage['4663'].streams.transactions.highBlock,100);assert.equal(restored.coverage['4663'].status,'stale');assert.deepEqual(restored.coverage['4663'].inspected,[]);assert.equal(restored.evil,undefined);
- assert.equal(validateState(b.state,{trustEvidence:true}).records[0].verified,true);const legacy=backup();legacy.state.records[0].reviewed=true;assert.equal(validateHistoryBackup(legacy).state.decisions,undefined);assert.equal(validateState(legacy.state).decisions[seed.id].kind,'commission');
+ assert.equal(restored.decisions[seed.id].kind,'commission');assert.deepEqual(restored.coverage['4663'].streams,{});assert.equal(restored.coverage['4663'].status,'stale');assert.deepEqual(restored.coverage['4663'].inspected,[]);assert.equal(restored.evil,undefined);
+ assert.equal(validateState(b.state,{trustEvidence:true}).records[0].verified,true);const legacy=backup();legacy.state.records[0].reviewed=true;assert.deepEqual(validateHistoryBackup(legacy).state.decisions,{});assert.equal(validateState(legacy.state).decisions[seed.id].kind,'commission');
  assert.throws(()=>validateHistoryBackup(b,{wallets:{evm:seed.trader,sol:''}}),/钱包/);
 });
 test('record, coverage, settings and decisions reject malformed values without prototype pollution',()=>{

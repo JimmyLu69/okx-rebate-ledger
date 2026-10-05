@@ -7,7 +7,7 @@ import {
   canonical,
   decodeFeeLogs,
 } from "./ledger.mjs";
-import { request } from "./api.mjs";
+import { request, blockContext } from "./api.mjs";
 import { mapLimit } from "./network.mjs";
 
 const TRANSFER =
@@ -381,6 +381,8 @@ export function transferRow(
     direction: from === EVM ? "out" : "in",
     kind: "pending",
     time: tx.timestamp || "",
+    ...blockContext(tx),
+    ...(meta.metadataError ? {metadataError:meta.metadataError} : {}),
     evidence:
       from === EVM
         ? "成功交易转出；请确认是否为手动返还"
@@ -553,7 +555,7 @@ export function nodeRealNativeRows(items, chain, tx) {
   }
   return [...sums.values()];
 }
-export async function nativeFromNodeReal(url, chain, tx, signal) {
+export async function nativeFromNodeReal(url, chain, tx, signal, policy = {}) {
   const items = [];
   for (const direction of ["toAddress", "fromAddress"]) {
     let cursor = null;
@@ -569,7 +571,7 @@ export async function nativeFromNodeReal(url, chain, tx, signal) {
         order: "asc",
       };
       if (cursor) q.pageKey = cursor;
-      const result = await rpc(url, "nr_getAssetTransfers", [q], signal);
+      const result = await rpc(url, "nr_getAssetTransfers", [q], signal, policy);
       if (!Array.isArray(result.transfers))
         throw Error("NodeReal 内部转账列表缺失");
       // Exclude self-transfers before concatenating incoming/outgoing queries.
@@ -596,6 +598,7 @@ export async function inspectExtended(
   routers,
   signal,
   nativeLoader,
+  policy = {},
 ) {
   const isBSC = chain.id === "56",
     url = isBSC
@@ -603,9 +606,10 @@ export async function inspectExtended(
       : chain.id === "196"
         ? "https://rpc.xlayer.tech"
         : "https://rpc.linea.build";
+  const checkedRpc = (method,params) => rpc(url,method,params,signal,policy);
   const [tx, receipt] = await Promise.all([
-    rpc(url, "eth_getTransactionByHash", [hash], signal),
-    rpc(url, "eth_getTransactionReceipt", [hash], signal),
+    checkedRpc("eth_getTransactionByHash", [hash]),
+    checkedRpc("eth_getTransactionReceipt", [hash]),
   ]);
   if (
     lower(tx.hash) !== lower(hash) ||
@@ -614,27 +618,21 @@ export async function inspectExtended(
   )
     throw Error("交易与回执不一致，请重新同步");
   if (receipt.status !== "0x1") return [];
-  const block = await rpc(
-    url,
-    "eth_getBlockByHash",
-    [receipt.blockHash, false],
-    signal,
-  );
+  const block = await checkedRpc("eth_getBlockByHash", [receipt.blockHash, false]);
+  if (policy.fresh) {
+    const canonical = await checkedRpc("eth_getBlockByNumber", [receipt.blockNumber,false]);
+    if (lower(canonical.hash) !== lower(receipt.blockHash)) throw Error("交易所在区块已发生变化；等待重新确认");
+  }
   tx.timestamp = new Date(integer(block.timestamp) * 1000).toISOString();
   const sender = lower(tx.from);
   tx.from = { hash: sender, is_contract: true };
   tx.to = { hash: lower(tx.to) };
   tx.status = "ok";
-  const code = await rpc(
-    url,
-    "eth_getCode",
-    [sender, receipt.blockNumber],
-    signal,
-  );
+  const code = await checkedRpc("eth_getCode", [sender, receipt.blockNumber]);
   tx.from.is_contract = code !== "0x";
   let rows;
   if (isBSC) {
-    rows = await nativeFromNodeReal(url, chain, tx, signal);
+    rows = await nativeFromNodeReal(url, chain, tx, signal, policy);
   } else if (chain.id === "196") {
     if (!nativeLoader) throw Error("X Layer 内部交易数据源未配置");
     rows = await nativeLoader(tx);
@@ -673,29 +671,17 @@ export async function inspectExtended(
   }
   const metadata = {};
   await mapLimit([...assets], 2, async (asset) => {
-    const d = await rpc(
-      url,
-      "eth_call",
-      [{ to: asset, data: "0x313ce567" }, receipt.blockNumber],
-      signal,
-    );
-    const decimals = integer(d);
-    if (decimals > 36) throw Error("代币精度超出支持范围，需要人工核对");
-    let symbol = asset;
     try {
-      symbol = decodeSymbol(
-        await rpc(
-          url,
-          "eth_call",
-          [{ to: asset, data: "0x95d89b41" }, receipt.blockNumber],
-          signal,
-        ),
-        asset,
-      );
-    } catch (e) {
-      if (signal?.aborted) throw e;
+      const decimals = integer(await checkedRpc("eth_call", [{to:asset,data:"0x313ce567"},receipt.blockNumber]));
+      if(decimals>36) throw Error("代币精度超出支持范围");
+      let symbol=asset;
+      try { symbol=decodeSymbol(await checkedRpc("eth_call",[{to:asset,data:"0x95d89b41"},receipt.blockNumber]),asset); }
+      catch(error) { if(signal?.aborted) throw error; }
+      metadata[asset]={decimals,symbol};
+    } catch(error) {
+      if(signal?.aborted) throw error;
+      metadata[asset]={decimals:0,symbol:asset,metadataError:"代币元数据核验失败："+error.message};
     }
-    metadata[asset] = { decimals, symbol };
   });
   rows.push(...tokenTransfers(receipt.logs || [], chain, tx, metadata));
   const fees = decodeFeeLogs(
@@ -704,7 +690,7 @@ export async function inspectExtended(
     tx,
     metadata,
     routers[chain.id] || [],
-  );
+  ).map(r=>({...r,...blockContext(tx),...(metadata[r.asset]?.metadataError ? {metadataError:metadata[r.asset].metadataError} : {})}));
   return reconcileFeeTransfers(
     rows.map((r) => ({ ...r, ...paymentEvidence(tx, r) })),
     fees,

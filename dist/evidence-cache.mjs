@@ -1,6 +1,8 @@
+import { awaitWithSignal } from "./network.mjs";
 // Public, immutable-query responses only. API keys/credentials never enter keys or values.
 const memory = new Map(),
   inFlight = new Map();
+let memoryBytes = 0;
 let database,
   forceRefresh = false,
   enabled =
@@ -85,42 +87,50 @@ async function db() {
       };
       resolve(r.result);
     };
-    r.onerror = r.onblocked = () => resolve(null);
+    r.onerror = r.onblocked = () => { database = null; resolve(null); };
   }));
 }
-function trim() {
-  let bytes = [...memory.values()].reduce((n, r) => n + r.bytes, 0);
-  for (const [key, row] of memory) {
-    if (memory.size <= MAX_ENTRIES && bytes <= MAX_BYTES) break;
-    memory.delete(key);
-    bytes -= row.bytes;
+function forget(key) {
+  const prior = memory.get(key);
+  if (prior) memoryBytes -= prior.bytes;
+  memory.delete(key);
+}
+function remember(key, entry) {
+  forget(key);
+  memory.set(key, entry);
+  memoryBytes += entry.bytes;
+  for (const [oldKey] of memory) {
+    if (memory.size <= MAX_ENTRIES && memoryBytes <= MAX_BYTES) break;
+    forget(oldKey);
   }
 }
-export async function getEvidence(key) {
-  if (!enabled || !key || forceRefresh) return null;
+async function cacheWait(value, signal) {
+  const budget = AbortSignal.timeout(1000);
+  try { return await awaitWithSignal(value, signal ? AbortSignal.any([signal,budget]) : budget); }
+  catch (error) { if (signal?.aborted) throw error; return null; }
+}
+export async function getEvidence(key, { signal, bypass = false } = {}) {
+  if (signal?.aborted) throw signal.reason || Error("已暂停");
+  if (!enabled || !key || forceRefresh || bypass) return null;
   let entry = memory.get(key);
   if (!entry) {
-    const d = await db();
-    if (d)
-      entry = await new Promise((resolve) => {
-        const r = d.transaction("responses").objectStore("responses").get(key);
-        r.onsuccess = () => {
-          r.result.onversionchange = () => {
-            r.result.close();
-            database = null;
-          };
-          resolve(r.result);
-        };
-        r.onerror = r.onblocked = () => resolve(null);
-      });
+    const d = await cacheWait(db(), signal);
+    if (d) entry = await cacheWait(new Promise(resolve => {
+      try {
+        const t = d.transaction("responses"), r = t.objectStore("responses").get(key);
+        r.onsuccess = () => resolve(r.result || null);
+        r.onerror = t.onabort = () => resolve(null);
+      } catch { resolve(null); }
+    }), signal);
   }
-  if (!entry || Date.now() - entry.at > TTL) return null;
-  memory.delete(key);
-  memory.set(key, entry);
-  trim();
+  if (!entry || !Number.isFinite(entry.bytes) || Date.now() - entry.at > TTL) {
+    forget(key);
+    return null;
+  }
+  remember(key, entry);
   return structuredClone(entry.value);
 }
-export async function putEvidence(key, value) {
+export async function putEvidence(key, value, {signal} = {}) {
   if (
     !enabled ||
     !key ||
@@ -159,12 +169,10 @@ export async function putEvidence(key, value) {
   const bytes = new TextEncoder().encode(text).length;
   if (bytes > MAX_ITEM) return;
   const entry = { value: structuredClone(value), bytes, at: Date.now() };
-  memory.delete(key);
-  memory.set(key, entry);
-  trim();
-  const d = await db();
+  remember(key, entry);
+  const d = await cacheWait(db(), signal);
   if (!d) return;
-  await new Promise((resolve) => {
+  await cacheWait(new Promise((resolve) => {
     const t = d.transaction(["responses", "meta"], "readwrite"),
       s = t.objectStore("responses"),
       meta = t.objectStore("meta"),
@@ -197,32 +205,28 @@ export async function putEvidence(key, value) {
     };
     old.onsuccess = size.onsuccess = update;
     t.oncomplete = t.onerror = t.onabort = resolve;
-  });
+  }), signal);
 }
-export async function cachedEvidence(key, load, onHit = () => {}) {
-  const found = await getEvidence(key);
-  if (found) {
+export async function cachedEvidence(key, load, onHit = () => {}, options = {}) {
+  const {signal, bypass = false} = options;
+  const found = await getEvidence(key, options);
+  if (found) { onHit(); return found; }
+  if (key && !bypass && !forceRefresh && inFlight.has(key)) {
     onHit();
-    return found;
-  }
-  if (key && inFlight.has(key)) {
-    onHit();
-    return structuredClone(await inFlight.get(key));
+    return structuredClone(await awaitWithSignal(inFlight.get(key), signal));
   }
   const task = (async () => {
     const value = await load();
-    await putEvidence(key, value);
+    await putEvidence(key, value, {signal});
     return value;
   })();
   if (key) inFlight.set(key, task);
-  try {
-    return await task;
-  } finally {
-    if (key) inFlight.delete(key);
-  }
+  try { return await task; }
+  finally { if (key && inFlight.get(key) === task) inFlight.delete(key); }
 }
 export async function clearEvidenceCache() {
   memory.clear();
+  memoryBytes = 0;
   const d = await db();
   if (d)
     await new Promise((resolve) => {
@@ -235,7 +239,7 @@ export async function clearEvidenceCache() {
 export function evidenceDiagnostics() {
   return {
     memoryEntries: memory.size,
-    memoryBytes: [...memory.values()].reduce((n, r) => n + r.bytes, 0),
+    memoryBytes,
     maxEntries: MAX_ENTRIES,
     maxBytes: MAX_BYTES,
     ttlMs: TTL,

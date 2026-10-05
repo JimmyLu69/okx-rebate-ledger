@@ -32,18 +32,27 @@ export function abortableDelay(ms, signal) {
     signal?.addEventListener("abort", stop, { once: true });
   });
 }
+// Await storage/cache operations with the same cancellation boundary as network.
+export function awaitWithSignal(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(signal.reason || Error("已暂停"));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason || Error("已暂停"));
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(value).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
 export async function mapLimit(items, limit, fn) {
-  let cursor = 0;
+  let cursor = 0, failure;
   const output = new Array(items.length);
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      for (;;) {
-        const i = cursor++;
-        if (i >= items.length) return;
-        output[i] = await fn(items[i], i);
-      }
-    }),
-  );
+  await Promise.allSettled(Array.from({length:Math.min(Math.max(1,limit),items.length)}, async()=> {
+    while (!failure) {
+      const i=cursor++; if(i>=items.length) return;
+      try { output[i]=await fn(items[i],i); }
+      catch(error) { failure ||= error; }
+    }
+  }));
+  if(failure) throw failure;
   return output;
 }
 export function retryAfterMs(value, now = Date.now()) {
@@ -63,22 +72,49 @@ export function providerName(url) {
 }
 const starts = new Map(),
   lastStart = new Map();
-export async function waitForProvider(provider, signal) {
-  const interval =
-    { helius: 120, nodereal: 250, etherscan: 600, linea: 100 }[provider] || 0;
-  if (!interval) return;
-  const turn = (starts.get(provider) || Promise.resolve()).then(async () => {
-    await abortableDelay(
-      Math.max(0, interval - (Date.now() - (lastStart.get(provider) || 0))),
-      signal,
-    );
-    lastStart.set(provider, Date.now());
+let budgetDB;
+async function sharedBudget(signal) {
+  if (typeof indexedDB === "undefined") return null;
+  const pending = budgetDB ||= new Promise(resolve => {
+    const request = indexedDB.open("rebate-network-budget", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("starts");
+    request.onsuccess = () => {
+      request.result.onversionchange = () => { request.result.close(); budgetDB = null; };
+      resolve(request.result);
+    };
+    request.onerror = request.onblocked = () => { budgetDB = null; resolve(null); };
   });
-  starts.set(
-    provider,
-    turn.catch(() => {}),
-  );
-  await turn;
+  try { return await awaitWithSignal(pending, AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(1000)])); }
+  catch (error) { if (signal?.aborted) throw error; return null; }
+}
+export async function waitForProvider(provider, signal) {
+  const interval = {blockscout:260,helius:120,nodereal:250,etherscan:600,linea:100}[provider] || 0;
+  if (!interval) return;
+  const reserve = async () => {
+    let d, previous = lastStart.get(provider) || 0;
+    if (globalThis.navigator?.locks) {
+      d = await sharedBudget(signal);
+      if (d) {
+        const at = await awaitWithSignal(new Promise(resolve => {
+          try { const r=d.transaction("starts").objectStore("starts").get(provider); r.onsuccess=()=>resolve(r.result); r.onerror=()=>resolve(0); }
+          catch { resolve(0); }
+        }), signal);
+        previous = Math.max(previous, Number(at) || 0);
+      }
+    }
+    await abortableDelay(Math.max(0, interval - (Date.now() - previous)), signal);
+    const now = Date.now(); lastStart.set(provider, now);
+    if (d) await awaitWithSignal(new Promise(resolve => {
+      try { const t=d.transaction("starts","readwrite");t.objectStore("starts").put(now,provider);t.oncomplete=t.onerror=t.onabort=resolve; }
+      catch { resolve(); }
+    }), signal);
+  };
+  const turn = (starts.get(provider) || Promise.resolve()).then(() =>
+    globalThis.navigator?.locks
+      ? navigator.locks.request("rebate-provider:"+provider, {signal}, reserve)
+      : reserve());
+  starts.set(provider, turn.catch(() => {}));
+  await awaitWithSignal(turn, signal);
 }
 export async function boundedResponseText(
   response,

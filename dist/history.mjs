@@ -44,7 +44,7 @@ export function incrementalStreams(streams = {}, records = []) {
           name,
           {
             complete: false,
-            minBlock: p.endBlock + 1,
+            minBlock: Math.max(0, p.endBlock - 64),
             count: p.count,
             fullRange: p.fullRange,
           },
@@ -67,8 +67,8 @@ export function restoreHistory(data, wallets, validateRecord) {
   if (data?.format === "rebate-history")
     return validateHistoryBackup(data, { wallets }).state;
   const records = Array.isArray(data) ? data : data?.records;
-  if (!Array.isArray(records) || records.length > 100000)
-    throw Error("历史文件缺少 records 或超过十万笔");
+  if (!Array.isArray(records) || records.length > 1000000)
+    throw Error("历史文件缺少 records 或超过一百万笔");
   if (validateRecord) for (const row of records) validateRecord(row);
   return validateState(
     { version: 1, records, coverage: {}, selected: [], updated: null },

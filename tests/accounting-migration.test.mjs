@@ -54,7 +54,7 @@ const state = (records) => ({
   updated: now,
 });
 
-test("local history retains valid proof; external history preserves cursors but exposes all unverified rows", () => {
+test("local history retains valid proof; external history resets untrusted cursors and exposes all unverified rows", () => {
   const saved = state([transfer, machineFee]);
   const local = validateState(saved, { wallets, trustEvidence: true });
   assert.equal(summarize(autoAccount(local.records))[0].due, "100");
@@ -66,10 +66,7 @@ test("local history retains valid proof; external history preserves cursors but 
       .sort(),
     [transfer.id, machineFee.id].sort(),
   );
-  assert.deepEqual(
-    imported.coverage[seed.chain].streams,
-    saved.coverage[seed.chain].streams,
-  );
+  assert.deepEqual(imported.coverage[seed.chain].streams, {});
   assert.deepEqual(imported.coverage[seed.chain].inspected, []);
   // Untrusted machine fields remain available in the original history for audit.
   assert.deepEqual(imported.records[0].supersededBy, [seed.id]);
@@ -98,7 +95,7 @@ test("external self-swap, dust proof and old reviewed flags cannot silently hide
     reviewed: true,
   };
   const restored = restoreHistory([sol], wallets);
-  assert.equal(restored.decisions, undefined);
+  assert.deepEqual(restored.decisions, {});
   assert.equal(pendingReview(restored.records).length, 1);
   assert.equal(autoAccount(restored.records)[0].spam, undefined);
   const base = {

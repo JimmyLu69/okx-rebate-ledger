@@ -175,3 +175,17 @@ test("streaming worker waits for end and accepts a later batch without premature
     await worker.terminate();
   }
 });
+
+test("streaming worker requests bounded replacement work while a tail request is active", async () => {
+  const url=new URL('../dist/recheck-worker.mjs',import.meta.url).href;
+  const worker=new Worker(`const {parentPort}=require('node:worker_threads');global.self={postMessage:m=>parentPort.postMessage(m)};global.fetch=async()=>{await new Promise(r=>setTimeout(r,70));return Response.json({hash:'0x'+'a'.repeat(64),status:'ok',from:{hash:'0x'+'1'.repeat(40)},to:{hash:'0x'+'2'.repeat(40)}})};import(${JSON.stringify(url)}).then(()=>{parentPort.on('message',data=>self.onmessage({data}));parentPort.postMessage({type:'ready'})});`,{eval:true});
+  try {
+    await new Promise((resolve,reject)=>{worker.once('message',resolve);worker.once('error',reject)});
+    const messages=[];
+    const needed=new Promise((resolve,reject)=>{worker.on('error',reject);worker.on('message',m=>{messages.push(m);if(m.type==='need-jobs')resolve(m)})});
+    worker.postMessage({type:'start',streaming:true,wallets:{evm:'0x'+'1'.repeat(40),sol:''},keys:{blockscout:'synthetic'},routers:{},jobs:[{key:'tail',chain:{id:'4663'},hash:'0x'+'a'.repeat(64),rows:[{id:'row',direction:'out',from:'0x'+'1'.repeat(40),to:'0x'+'2'.repeat(40)}]}]});
+    const refill=await needed;
+    assert.equal(refill.active,1);assert.equal(refill.credit,30);
+    assert(!messages.some(m=>m.type==='result'));
+  } finally {await worker.terminate()}
+});

@@ -45,7 +45,7 @@ async function startServer(){
 async function readDownload(download){const stream=await download.createReadStream(),chunks=[];for await(const chunk of stream)chunks.push(chunk);const bytes=Buffer.concat(chunks);return bytes[0]===31&&bytes[1]===139?gunzipSync(bytes):bytes}
 async function closeDialogs(page){for(const dialog of await page.locator('dialog[open]').all())await dialog.evaluate(el=>el.close())}
 async function localSetting(page,key){return page.evaluate(key=>JSON.parse(localStorage.getItem(key)||'null'),key)}
-async function currentHistory(page){return page.evaluate(async key=>(await import('./storage.mjs')).readHistory(key),walletKey)}
+async function currentHistory(page){return page.evaluate(async wallets=>(await import('./profile-storage.mjs')).readProfile(wallets),{evm:own,sol:''})}
 async function chooseFile(page,id,name,value){await page.locator(id).setInputFiles(file(name,value))}
 async function check(name,run){try{await run();passed.push(name);console.log('PASS '+name)}catch(error){failures.push({name,error:error.stack||error.message});console.error('FAIL '+name+'\n'+(error.stack||error.message))}}
 try{
@@ -76,7 +76,7 @@ try{
  });
  await check('invalid credentials and storage failure cannot partially apply settings',async()=>{
   const baseline=await localSetting(page,'rebate-preferences-v1');await page.locator('#setupButton').click();await page.locator('#toleranceValue').fill('0.25');
-  await page.locator('details').filter({has:page.locator('#xlayerKey')}).locator('summary').click();await page.locator('#xlayerKey').fill('incomplete-synthetic');await page.locator('#saveSettings').click();
+  await page.locator('#chainChoices input[data-chain="196"]').check();await page.locator('details').filter({has:page.locator('#xlayerKey')}).locator('summary').click();await page.locator('#xlayerKey').fill('incomplete-synthetic');await page.locator('#saveSettings').click();
   await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('X Layer'));
   assert.deepEqual(await localSetting(page,'rebate-preferences-v1'),baseline);await page.locator('#xlayerKey').fill('');
   await page.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(this===localStorage&&key==='rebate-preferences-v1'){Storage.prototype.setItem=original;throw new DOMException('Synthetic quota failure','QuotaExceededError')}return original.call(this,key,value)}});
@@ -109,7 +109,7 @@ try{
   const hash='0x'+'b'.repeat(64),id=`8453:${hash}:fee:999`,incoming=envelope(seed());
   incoming.state.records=[{...row,id,hash,raw:'999999999999999999999999'}];incoming.state.decisions={[id]:{kind:'commission',trader,reason:'Untrusted imported judgment',updatedAt:'2026-10-01T00:03:00.000Z'}};
   await page.locator('#backupCenterButton').click();await chooseFile(page,'#importFile','unverified-judgment.json',incoming);await page.locator('#importPreview[open]').waitFor();await page.locator('#confirmImport').click();await page.locator('#importPreview').waitFor({state:'hidden'});
-  const kind=await page.evaluate(async({key,id})=>{const saved=await(await import('./storage.mjs')).readHistory(key);return(await import('./ledger.mjs')).autoAccount(saved.records,saved.decisions).find(r=>r.id===id).kind},{key:walletKey,id});
+  const kind=await page.evaluate(async({key,id})=>{const saved=await(await import('./profile-storage.mjs')).readProfile({evm:key.split(':')[1],sol:''});return(await import('./ledger.mjs')).autoAccount(saved.records,saved.decisions).find(r=>r.id===id).kind},{key:walletKey,id});
   assert.equal(kind,'pending','Restored human labels cannot establish that an imported transfer or amount exists');assert.equal(await page.locator('#rowCount').innerText(),'1 个地址');await closeDialogs(page);
  });
  await check('manual decisions and undo remain atomic when IndexedDB refuses a write',async()=>{
@@ -157,7 +157,7 @@ try{
  }
  await check('all 125 confirmed group records are reachable through detail pagination',async()=>{
   const many=seed();many.records=Array.from({length:125},(_,index)=>{const hash='0x'+(index+1).toString(16).padStart(64,'0');return{...row,hash,id:`8453:${hash}:fee:1`}});many.coverage['8453'].inspected=many.records.map(row=>row.hash);many.lastRecheck=null;
-  await page.evaluate(async({key,state})=>{const storage=await import('./storage.mjs');await storage.readHistory(key);await storage.writeHistory(key,state)},{key:walletKey,state:many});
+  await page.evaluate(async({key,state})=>{const storage=await import('./profile-storage.mjs');const wallets={evm:key.split(':')[1],sol:''};await storage.readProfile(wallets);await storage.writeProfile(wallets,state)},{key:walletKey,state:many});
   await page.reload({waitUntil:'networkidle'});await page.locator('#rowCount').filter({hasText:'1 个地址'}).waitFor({timeout:15000});await page.locator('#tableArea [data-group]').first().click();
   const ids=()=>page.locator('#detailBody [data-decision]').evaluateAll(forms=>forms.map(form=>form.dataset.decision));
   assert.equal(await page.locator('#detailBody > article.record').count(),50);assert.equal(await page.locator('#detailPageNum').innerText(),'1 / 3 · 125 条');assert(await page.locator('#detailPrev').isDisabled());const first=await ids();

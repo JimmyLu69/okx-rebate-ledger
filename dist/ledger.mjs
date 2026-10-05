@@ -63,6 +63,123 @@ export function decisionsFromLegacy(records) {
       };
   return decisions;
 }
+// Migrate once: raw records never retain a second, hidden manual decision.
+export function migrateManualDecisions(
+  records,
+  decisions = {},
+  trustLegacy = true,
+) {
+  const migrated = trustLegacy ? decisionsFromLegacy(records) : {};
+  return {
+    decisions: { ...migrated, ...decisions },
+    records: records.map((r) => {
+      if (!r.reviewed) return r;
+      const next = { ...r, kind: "pending", trader: "" };
+      for (const key of [
+        "reviewed",
+        "reviewedAt",
+        "reviewReason",
+        "spamDismissed",
+        "whitelistKind",
+        "automatic",
+      ])
+        delete next[key];
+      // Legacy manual edits may have overwritten the machine-derived trader.
+      // Undo must not re-use that address as protocol evidence.
+      next.attributionVerified = false;
+      return next;
+    }),
+  };
+}
+export function decisionMatchesDirection(row, decision) {
+  return (
+    !!decision &&
+    ["commission", "refund", "ignore", "pending"].includes(decision.kind) &&
+    (decision.kind !== "commission" || row.direction === "in") &&
+    (decision.kind !== "refund" || row.direction === "out")
+  );
+}
+function unavailableEvidence(row) {
+  return row.importedUnverified || row.canonicalMissing || !!row.metadataError;
+}
+// Decisions on real receipts take precedence over all fee rows representing the
+// same money. A partly reviewed batch is shown as raw receipts until resolved.
+function manualReceiptProjection(records, decisions) {
+  const byId = new Map(records.map((r) => [r.id, r])),
+    blocked = new Set();
+  const receipts = new Map(),
+    links = new Map();
+  for (const f of records.filter((r) => r.feeEvent)) {
+    const ids = (f.matchedReceiptIds || []).filter((id) => byId.has(id));
+    receipts.set(f.id, ids);
+    for (const id of ids) {
+      if (!links.has(id)) links.set(id, []);
+      links.get(id).push(f.id);
+    }
+  }
+  const queue = records
+    .filter(
+      (r) =>
+        !r.feeEvent &&
+        !unavailableEvidence(r) &&
+        decisionMatchesDirection(r, decisions[r.id]),
+    )
+    .map((r) => r.id);
+  const restored = new Set(queue);
+  for (let i = 0; i < queue.length; i++) {
+    for (const feeId of links.get(queue[i]) || []) {
+      if (blocked.has(feeId)) continue;
+      blocked.add(feeId);
+      for (const id of receipts.get(feeId))
+        if (!restored.has(id)) {
+          restored.add(id);
+          queue.push(id);
+        }
+    }
+  }
+  return records.map((r) => {
+    if (blocked.has(r.id))
+      return {
+        ...r,
+        kind: "ignore",
+        manualSuppressed: true,
+        manualBlocked: "对应到账已有人工判断，请在原始到账流水修改",
+        attributionVerified: false,
+      };
+    if (restored.has(r.id) && r.supersededBy) {
+      const next = {
+        ...r,
+        kind: "pending",
+        manualConflict:
+          "原始到账已人工处理，关联机器返佣暂停；未处理的同组到账需核对",
+      };
+      delete next.supersededBy;
+      return next;
+    }
+    return r;
+  });
+}
+export function canBookManual(row, records) {
+  if (unavailableEvidence(row) || row.manualSuppressed) return false;
+  if (!row.feeEvent) return true;
+  if (!hasCommissionProof(row) || !row.matchedReceiptIds?.length) return false;
+  const byId =
+    records instanceof Map ? records : new Map(records.map((r) => [r.id, r]));
+  return row.matchedReceiptIds.every((id) => {
+    const receipt = byId.get(id);
+    return (
+      receipt &&
+      !receipt.feeEvent &&
+      !unavailableEvidence(receipt) &&
+      receipt.direction === "in" &&
+      receipt.chain === row.chain &&
+      receipt.hash === row.hash &&
+      receipt.asset === row.asset &&
+      receipt.to === row.to &&
+      receipt.supersededBy?.includes(row.id)
+    );
+  });
+}
 // A completed inspection is authoritative for this transaction. In particular,
 // vanished fee events must be removed, rather than survive an additive merge.
 // Manual decisions live separately; callers retain them even if an ID disappears.
@@ -100,11 +217,26 @@ export function mergeRecords(old, items) {
   }
   return [...m.values()];
 }
-export function summarize(records) {
-  const m = new Map();
+export function summarize(records, conflicts = []) {
+  const m = new Map(),
+    precision = new Map(),
+    invalid = new Set();
+  for (const r of records) {
+    if (r.supersededBy || !["commission", "refund"].includes(r.kind)) continue;
+    const key = r.chain + ":" + canonical(r.chain, r.asset);
+    if (precision.has(key) && precision.get(key) !== r.decimals)
+      invalid.add(key);
+    else precision.set(key, r.decimals);
+  }
+  for (const key of invalid)
+    conflicts.push({
+      assetKey: key,
+      reason: "同一代币存在精度冲突，已暂停此资产计账",
+    });
   for (const r of records) {
     if (
       r.supersededBy ||
+      invalid.has(r.chain + ":" + canonical(r.chain, r.asset)) ||
       !["commission", "refund"].includes(r.kind) ||
       !r.trader
     )
@@ -123,17 +255,20 @@ export function summarize(records) {
         due: 0n,
         paid: 0n,
         ids: [],
+        hashes: new Set(),
       });
     const g = m.get(key);
     if (g.decimals !== r.decimals)
       throw Error("同一代币存在精度冲突，请核对数据源");
     g[r.kind === "commission" ? "due" : "paid"] += BigInt(r.raw);
     g.ids.push(r.id);
+    g.hashes.add(r.hash);
   }
   return [...m.values()].map((g) => {
     let net = g.due - g.paid;
     return {
       ...g,
+      hashes: [...g.hashes],
       due: g.due.toString(),
       paid: g.paid.toString(),
       remaining: (net > 0n ? net : 0n).toString(),
@@ -393,7 +528,7 @@ export function paymentEvidence(tx, row) {
 }
 export function hasCommissionProof(r) {
   if (
-    r.importedUnverified ||
+    unavailableEvidence(r) ||
     r.direction !== "in" ||
     !validAddress(r.chain, r.trader || "") ||
     canonical(r.chain, r.to) !== (r.chain === "solana" ? SOL : EVM) ||
@@ -691,8 +826,10 @@ export const REPORTED_SPAM_ASSETS = new Set([
   "10:0xcd4ea8bd757f8e431923ae64b7ce98bcb7d08392",
   "solana:AWs2J3buZeyvvSE5pyoFVJQUNKa36g8sbouskt6W9fre",
 ]);
-export function autoAccount(records, decisions = {}) {
+export function autoAccount(records, decisions = {}, options = {}) {
   const whitelist = allowlistEnabled();
+  records = manualReceiptProjection(records, decisions);
+  const byId = new Map(records.map((r) => [r.id, r]));
   const rows = records.map((r) => {
     const copy = { ...r };
     delete copy.needsProof;
@@ -727,7 +864,7 @@ export function autoAccount(records, decisions = {}) {
       copy.kind = "pending";
       delete copy.autoExcluded;
     }
-    if (copy.importedUnverified) {
+    if (unavailableEvidence(copy)) {
       copy.kind = "pending";
       delete copy.supersededBy;
       delete copy.reviewed;
@@ -737,7 +874,20 @@ export function autoAccount(records, decisions = {}) {
     }
     // A backup decision cannot authenticate its underlying amount or owner.
     // Retain it separately, but apply it only after the transfer itself is rechecked.
-    const decision = copy.importedUnverified ? null : decisions[copy.id];
+    const candidate = decisions[copy.id];
+    const decision =
+      unavailableEvidence(copy) ||
+      copy.manualSuppressed ||
+      !decisionMatchesDirection(copy, candidate)
+        ? null
+        : candidate;
+    const bookable = canBookManual(copy, byId);
+    if (copy.canonicalMissing)
+      copy.manualBlocked = "交易所在区块尚未通过核验，暂不能计账";
+    else if (copy.metadataError)
+      copy.manualBlocked = "代币精度尚未核验，暂不能计账";
+    if (copy.feeEvent && !bookable)
+      copy.manualBlocked ||= "返佣事件尚未匹配真实到账，不能人工计入金额";
     if (
       decision &&
       ["commission", "refund", "ignore", "pending"].includes(decision.kind)
@@ -745,7 +895,8 @@ export function autoAccount(records, decisions = {}) {
       const trader = canonical(copy.chain, decision.trader || "");
       if (
         !["commission", "refund"].includes(decision.kind) ||
-        (validAddress(copy.chain, trader) &&
+        (bookable &&
+          validAddress(copy.chain, trader) &&
           trader !== (copy.chain === "solana" ? SOL : EVM))
       ) {
         copy.kind = decision.kind;
@@ -775,7 +926,7 @@ export function autoAccount(records, decisions = {}) {
       BigInt(r.raw) > 0n &&
       BigInt(r.raw) <= 1n &&
       !r.spamDismissed &&
-      !r.importedUnverified
+      !unavailableEvidence(r)
     ) {
       r.kind = "pending";
       r.spam = true;
@@ -786,7 +937,7 @@ export function autoAccount(records, decisions = {}) {
     if (
       r.chain === "solana" &&
       r.solanaSelfSwap &&
-      !r.importedUnverified &&
+      !unavailableEvidence(r) &&
       !r.spam &&
       !r.reviewed
     ) {
@@ -795,7 +946,14 @@ export function autoAccount(records, decisions = {}) {
       r.autoExcluded = true;
       r.exclusionReason = "本钱包自己的 swap，非返佣 / 返还";
     }
-    if (r.spam || r.supersededBy || r.reviewed || r.kind !== "pending")
+    if (
+      unavailableEvidence(r) ||
+      r.manualSuppressed ||
+      r.spam ||
+      r.supersededBy ||
+      r.reviewed ||
+      r.kind !== "pending"
+    )
       continue;
     if (
       !whitelist &&
@@ -814,6 +972,10 @@ export function autoAccount(records, decisions = {}) {
             : "官方路由返佣事件、直接交易发起人与实际到账一致";
     }
   }
+  if (options.phase === "commission") return rows;
+  return finalizeAccounting(rows);
+}
+export function accountingContext(rows) {
   const commissions = rows.filter(
     (r) => !r.spam && !r.supersededBy && r.kind === "commission",
   );
@@ -822,19 +984,32 @@ export function autoAccount(records, decisions = {}) {
     commissions.map((r) => assetKey(r) + ":" + canonical(r.chain, r.trader)),
   );
   const knownAssets = new Set(commissions.map(assetKey));
-  // Similarity is only used without the explicit whitelist. Indexing short
-  // address fragments avoids an O(records × invitees) scan in that fallback.
   const fragments = new Map();
-  if (!whitelist)
+  if (!allowlistEnabled())
     for (const r of commissions) {
       if (r.chain === "solana") continue;
-      const a = canonical(r.chain, r.trader),
-        key = a.slice(0, 6) + a.slice(-4);
+      const address = canonical(r.chain, r.trader),
+        key = address.slice(0, 6) + address.slice(-4);
       if (!fragments.has(key)) fragments.set(key, new Set());
-      fragments.get(key).add(a);
+      fragments.get(key).add(address);
     }
+  return { relationships, knownAssets, fragments };
+}
+export function finalizeAccounting(input, context) {
+  const whitelist = allowlistEnabled();
+  const rows = input.map((r) => (r.kind === "pending" ? { ...r } : r));
+  const { relationships, knownAssets, fragments } =
+    context || accountingContext(rows);
+  const assetKey = (r) => r.chain + ":" + canonical(r.chain, r.asset);
   for (const r of rows) {
-    if (r.spam || r.supersededBy || r.reviewed || r.kind !== "pending")
+    if (
+      unavailableEvidence(r) ||
+      r.manualSuppressed ||
+      r.spam ||
+      r.supersededBy ||
+      r.reviewed ||
+      r.kind !== "pending"
+    )
       continue;
     const own = r.chain === "solana" ? SOL : EVM,
       recipient = canonical(r.chain, r.to);
@@ -847,7 +1022,7 @@ export function autoAccount(records, decisions = {}) {
         !!similar && (similar.size > 1 || !similar.has(recipient));
       if (
         REPORTED_SPAM_ASSETS.has(assetKey(r)) ||
-        (!r.importedUnverified && r.sourceSpam) ||
+        (!unavailableEvidence(r) && r.sourceSpam) ||
         (!knownAssets.has(assetKey(r)) && r.direction === "out" && lookalike)
       ) {
         r.spam = true;
@@ -864,7 +1039,7 @@ export function autoAccount(records, decisions = {}) {
       r.direction === "out" &&
       canonical(r.chain, r.from) === own &&
       relationships.has(assetKey(r) + ":" + recipient) &&
-      !r.importedUnverified &&
+      !unavailableEvidence(r) &&
       r.paymentAuthorized === true &&
       r.directTransfer === true &&
       canonical(r.chain, r.txSender) === own
@@ -891,7 +1066,7 @@ export function autoAccount(records, decisions = {}) {
       r.kind === "pending" &&
       !r.reviewed &&
       !r.spamDismissed &&
-      !r.importedUnverified &&
+      !unavailableEvidence(r) &&
       !r.feeEvent &&
       !r.supersededBy &&
       r.chain === "8453" &&

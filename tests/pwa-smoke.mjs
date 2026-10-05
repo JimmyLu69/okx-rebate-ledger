@@ -9,6 +9,7 @@ import {homedir} from 'node:os';
 import {resolve,dirname,extname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
 import {buildAssets} from '../scripts/assets.mjs';
 const project=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -22,12 +23,16 @@ function nextSnapshot(){
   const key=path.replaceAll(first.version,nextVersion);
   output.set(key,['/index.html','/sw.js','/build-info.json'].includes(path)?Buffer.from(bytes.toString().replaceAll(first.version,nextVersion)):bytes);
  }
+ for(const path of ['/ledger.mjs','/assets/'+nextVersion+'/ledger.mjs'])output.set(path,Buffer.concat([output.get(path),Buffer.from('\n// Synthetic changed dependency for atomic update test\n')]));
+ let worker=output.get('/sw.js').toString();const files=JSON.parse(worker.match(/const FILES=(\[.*?\]);/)[1]);
+ const digests=Object.fromEntries(files.map(p=>[p,createHash('sha256').update(output.get(p==='/'?'/index.html':p)).digest('hex')]));
+ worker=worker.replace(/const DIGESTS=\{.*?\};/,'const DIGESTS='+JSON.stringify(digests)+';');output.set('/sw.js',Buffer.from(worker));
  return {output,version:nextVersion};
 }
-const next=nextSnapshot();let current=first,failPath=null,apiCalls=0;
+const next=nextSnapshot();let current=first,failPath=null,apiCalls=0;const assetRequests=new Map();
 const toml=await readFile(resolve(project,'netlify.toml'),'utf8'),csp=toml.match(/Content-Security-Policy\s*=\s*"([^"]+)"/)?.[1];
 const server=createServer(async(req,res)=>{
- const url=new URL(req.url,'http://localhost'),pathname=url.pathname;
+ const url=new URL(req.url,'http://localhost'),pathname=url.pathname;assetRequests.set(pathname,(assetRequests.get(pathname)||0)+1);
  if(pathname.startsWith('/api/')){apiCalls++;res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}).end('{"synthetic":true}');return}
  if(pathname===failPath){res.writeHead(503,{'Cache-Control':'no-store'}).end('Synthetic missing deploy asset');return}
  const bytes=current.output.get(pathname==='/'?'/index.html':pathname);if(!bytes){res.writeHead(404,{'Cache-Control':'no-store'}).end('Missing');return}
@@ -38,12 +43,12 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base='http://127.0.0.1:'+server.address().port;let browser;
 try{
  // Run all ordinary UI/security scenarios against versioned URLs as Netlify serves them.
- const result=await promisify(execFile)(process.execPath,[resolve(project,'tests/browser-smoke.mjs')],{env:{...process.env,BROWSER_SMOKE_URL:base},timeout:180000,maxBuffer:2*1024*1024});console.log(result.stdout.trim());
+ if(!process.env.PWA_SKIP_UI){ const result=await promisify(execFile)(process.execPath,[resolve(project,'tests/browser-smoke.mjs')],{env:{...process.env,BROWSER_SMOKE_URL:base},timeout:180000,maxBuffer:2*1024*1024});console.log(result.stdout.trim());}
  const bundled=playwright.chromium.executablePath(),executablePath=process.env.CHROMIUM_EXECUTABLE||await stat(bundled).then(()=>bundled,()=>process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':undefined);
  browser=await playwright.chromium.launch({headless:true,...(executablePath?{executablePath}:{}),args:['--disable-extensions','--disable-background-networking']});
  const context=await browser.newContext({serviceWorkers:'allow',viewport:{width:390,height:844}});
  await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort('blockedbyclient'));
- const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+ const page=await context.newPage(),errors=[];page.on('pageerror',error=>{errors.push(error.message);console.error('PWA page error:',error.message)});page.on('requestfailed',request=>console.error('PWA request failed:',request.url(),request.failure()?.errorText));
  const appVersion=()=>page.locator('script[type="module"]').getAttribute('src');
  await page.goto(base,{waitUntil:'networkidle'});await page.waitForFunction(()=>navigator.serviceWorker.controller&&document.querySelector('#rowCount')?.textContent.includes('个地址'),null,{timeout:20000});
  assert((await appVersion()).includes(first.version));
@@ -68,13 +73,14 @@ try{
  const alreadyWaiting=await page.evaluate(async()=>!!(await navigator.serviceWorker.getRegistration('/')).waiting);
  if(!alreadyWaiting)assert.equal(await update(),'installed');await page.locator('#updateApp').waitFor({state:'visible',timeout:15000});assert((await appVersion()).includes(first.version),'Waiting worker must not silently mix releases');
  await page.locator('#updateApp').click();await page.waitForFunction(version=>document.querySelector('script[type="module"]')?.src.includes(version),next.version,{timeout:20000});await page.waitForFunction(()=>document.querySelector('#rowCount')?.textContent.includes('个地址'));
+ assert.equal(assetRequests.get('/assets/'+next.version+'/style.css')||0,0,'Unchanged stylesheet is copied by content digest instead of downloaded for the new release');
  const retained=await page.evaluate(()=>caches.keys());assert(retained.includes('rebate-shell-'+first.version)&&retained.includes('rebate-shell-'+next.version));
  await context.setOffline(true);
  assert((await other.locator('script[type="module"]').getAttribute('src')).includes(first.version));
- const oldWorker=await other.evaluate(async version=>{const worker=new Worker('/assets/'+version+'/backup-worker.mjs',{type:'module'});try{return await new Promise((resolve,reject)=>{worker.onmessage=event=>resolve(event.data.ok);worker.onerror=event=>reject(Error(event.message));worker.postMessage({type:'encode',value:{synthetic:true},password:'',compress:false})})}finally{worker.terminate()}},first.version);
+ const oldWorker=await other.evaluate(async version=>{const worker=new Worker('/assets/'+version+'/backup-worker.mjs',{type:'module'});try{return await new Promise((resolve,reject)=>{worker.onmessage=event=>{if(event.data.type!=='progress')resolve(event.data.ok)};worker.onerror=event=>reject(Error(event.message));worker.postMessage({type:'encode',value:{synthetic:true},password:'',compress:false})})}finally{worker.terminate()}},first.version);
  assert.equal(oldWorker,true,'Other tab must be able to load its old worker graph after an update');
  await other.close();await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#rowCount')?.textContent.includes('个地址'));assert((await appVersion()).includes(next.version));
  await page.waitForFunction(async version=>(await caches.keys()).length===1&&(await caches.keys())[0]==='rebate-shell-'+version,next.version);
  assert.deepEqual(errors,[]);console.log('PASS explicit activation keeps old-tab workers usable, then prunes old release after tabs close');
- await context.close();console.log('PWA smoke: 5/5 passed; versioned UI smoke: 11/11 passed');
+ await context.close();console.log('PWA smoke: 5/5 passed; versioned UI smoke: '+(process.env.PWA_SKIP_UI?'skipped':'passed'));
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve))}

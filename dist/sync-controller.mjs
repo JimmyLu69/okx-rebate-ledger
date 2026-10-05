@@ -4,6 +4,7 @@ import { scanXLayer, inspectXLayer } from "./xlayer-api.mjs";
 import { incrementalStreams } from "./history.mjs";
 import { providerFor } from "./catalog.mjs";
 import { configureEvidenceCache } from "./evidence-cache.mjs";
+import { mapLimit } from "./network.mjs";
 
 export class RecordIndex {
   constructor(records = []) {
@@ -114,12 +115,31 @@ export async function runSync({
     cov.status = "running";
     cov.error = "";
     state.coverage[id] = cov;
-    const inspected = new Set(cov.inspected);
+    const inspected = new Set(cov.inspected), attempted = new Set(), active = new Map();
+    const recent = new Set();
+    if (id !== "solana") for (const row of state.records) {
+      if (row.chain !== id || !Number.isSafeInteger(row.blockNumber)) continue;
+      if (Object.entries(cov.streams).some(([name,p]) => {
+        const from = provider === "blockscout" ? p.stopBlock : p.minBlock;
+        return Number.isSafeInteger(from) && row.blockNumber >= from &&
+          (provider !== "blockscout" || !row.stream || row.feeEvent || row.stream === name);
+      })) recent.add(row.hash);
+    }
+    const seenInWindow = new Set();
+    const concurrency = {blockscout:3,helius:2,nodereal:2,etherscan:2,xlayer:1}[provider] || 1;
+    const verifyMany = hashes => mapLimit([...new Set(hashes)].filter(h=>!attempted.has(h)), concurrency,
+      hash=>verify(hash,{fresh: recent.has(hash)}));
     const checkpoint = async () => {
       cov.inspected = [...inspected];
       await flush(true);
     };
-    async function verify(hash) {
+    async function verify(hash, policy = {}) {
+      if(active.has(hash)) return active.get(hash);
+      const task=verifyOne(hash,policy); active.set(hash,task);
+      try { return await task; } finally { active.delete(hash); }
+    }
+    async function verifyOne(hash, policy = {}) {
+      attempted.add(hash);
       if (signal.aborted) throw Error("已暂停");
       onProgress(`${chain.name} · 核验交易 ${inspected.size.toLocaleString()}`);
       try {
@@ -134,12 +154,13 @@ export async function runSync({
             routers,
             index.transaction(id, hash),
             signal,
+            policy,
           );
           rows = [...result.replace, ...result.fees];
         } else
           rows = await (
             provider === "xlayer" ? inspectXLayer : inspectExtended
-          )(chain, hash, key, routers, signal);
+          )(chain, hash, key, routers, signal, ...(provider === "xlayer" ? [policy] : [undefined,policy]));
         checkCancelled();
         // A successful receipt replaces every prior machine-derived row for this tx.
         index.replace(id, hash, rows);
@@ -153,7 +174,7 @@ export async function runSync({
         index.merge(
           index
             .transaction(id, hash)
-            .map((r) => ({ ...r, inspectionError: error.message })),
+            .map((r) => ({ ...r, inspectionError: error.message, ...(policy.fresh ? {canonicalMissing:true} : {}) })),
         );
         changed++;
       }
@@ -161,9 +182,13 @@ export async function runSync({
     }
     const onPage = async (rows, position) => {
       checkCancelled();
-      const newRows = rows.filter(
-        (r) => !index.rows.has(r.id) || index.rows.get(r.id).importedUnverified,
-      );
+      for(const r of rows) {
+        seenInWindow.add(r.hash);
+        const old=index.rows.get(r.id);
+        if(old?.blockHash && r.blockHash && old.blockHash!==r.blockHash) recent.add(r.hash);
+      }
+      const newRows = rows.filter(r=> !index.rows.has(r.id) || index.rows.get(r.id).importedUnverified ||
+        recent.has(r.hash) || (r.blockHash && r.blockHash !== index.rows.get(r.id).blockHash));
       if (provider === "helius") {
         // scanSolana returns complete parsed transactions, not one log stream.
         // Replace each full transaction so disappeared machine rows are removed.
@@ -185,8 +210,7 @@ export async function runSync({
       if (provider === "blockscout")
         for (const row of newRows) inspected.delete(row.hash);
       if (chain.provider)
-        for (const hash of new Set(rows.map((r) => r.hash)))
-          if (!inspected.has(hash)) await verify(hash);
+        await verifyMany(rows.filter(r=>!inspected.has(r.hash)||recent.has(r.hash)).map(r=>r.hash));
       cov.streams[position.stream] = position;
       await checkpoint();
     };
@@ -202,10 +226,9 @@ export async function runSync({
         const hashes = [...index.transactions.keys()]
           .filter((k) => k.startsWith("solana:"))
           .map((k) => k.slice(7));
-        for (const hash of hashes) if (!inspected.has(hash)) await verify(hash);
+        await verifyMany(hashes.filter(hash=>!inspected.has(hash)));
       } else {
-        for (const hash of Object.keys(cov.inspectionErrors))
-          await verify(hash);
+        await verifyMany(Object.keys(cov.inspectionErrors));
         if (chain.provider) {
           const scanner = {
             nodereal: scanBSC,
@@ -234,7 +257,14 @@ export async function runSync({
         const hashes = [...index.transactions.keys()]
           .filter((k) => k.startsWith(id + ":"))
           .map((k) => k.slice(id.length + 1));
-        for (const hash of hashes) if (!inspected.has(hash)) await verify(hash);
+        // A closed recent scan is only an index hint: disappearing entries are
+        // rechecked against authoritative receipts, never deleted on a missing page.
+        for(const hash of recent) if(!seenInWindow.has(hash)) {
+          index.merge(index.transaction(id,hash).map(r=>({...r,canonicalMissing:true})));
+          inspected.delete(hash); changed++;
+        }
+        await verifyMany(hashes.filter(hash=>!inspected.has(hash)||recent.has(hash)||
+          index.transaction(id,hash).some(r=>!Number.isSafeInteger(r.blockNumber))));
       }
       if (Object.keys(cov.inspectionErrors).length)
         throw Error(

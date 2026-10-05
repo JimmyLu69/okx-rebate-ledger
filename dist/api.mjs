@@ -18,19 +18,18 @@ import {
   retryAfterMs,
   waitForProvider,
   boundedResponseText,
+  mapLimit,
 } from "./network.mjs";
 import { cachedEvidence, evidenceKey } from "./evidence-cache.mjs";
 const delay = abortableDelay;
-let blockscoutStart = Promise.resolve(),
-  lastBlockscoutStart = 0;
 export async function request(url, options = {}, signal, policy = {}) {
   const provider = providerName(url),
-    key = policy.cache === false ? null : evidenceKey(url, options);
+    key = policy.cache === false ? null : evidenceKey(url, options),
+    deadline = AbortSignal.timeout(policy.deadlineMs ?? 90000),
+    combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
   return cachedEvidence(
     key,
     async () => {
-      const deadline = AbortSignal.timeout(policy.deadlineMs ?? 90000),
-        combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
       const attempts = policy.attempts ?? 3;
       for (let i = 0; i < attempts; i++) {
         if (combined.aborted)
@@ -131,18 +130,14 @@ export async function request(url, options = {}, signal, policy = {}) {
       throw Error("查询失败");
     },
     () => noteRequest(provider, "cacheHits"),
-  );
-}
-export async function bs(chain, path, key, params = {}, signal) {
-  if (!key) throw Error("请先填写 Blockscout API Key");
-  const turn = blockscoutStart.then(async () => {
-    const wait = 260 - (Date.now() - lastBlockscoutStart);
-    if (wait > 0) await delay(wait, signal);
-    if (signal?.aborted) throw Error("已暂停");
-    lastBlockscoutStart = Date.now();
+    { signal: combined, bypass: policy.fresh === true },
+  ).catch(error => {
+    if (combined.aborted) throw Error(signal?.aborted ? "已暂停" : "查询总时限已到；可重试失败项");
+    throw error;
   });
-  blockscoutStart = turn.catch(() => {});
-  await turn;
+}
+export async function bs(chain, path, key, params = {}, signal, policy = {}) {
+  if (!key) throw Error("请先填写 Blockscout API Key");
   return request(
     "/api/blockscout",
     {
@@ -151,14 +146,15 @@ export async function bs(chain, path, key, params = {}, signal) {
       body: JSON.stringify({ chain, path, key, params }),
     },
     signal,
+    policy,
   );
 }
-async function pages(chain, path, key, signal) {
+async function pages(chain, path, key, signal, policy = {}) {
   let cursor = null,
     items = [],
     seen = new Set();
   do {
-    const data = await bs(chain, path, key, cursor || {}, signal);
+    const data = await bs(chain, path, key, cursor || {}, signal, policy);
     if (!Array.isArray(data.items)) throw Error("分页响应缺少 items");
     items.push(...data.items);
     cursor = data.next_page_params;
@@ -168,6 +164,21 @@ async function pages(chain, path, key, signal) {
     seen.add(c);
   } while (cursor);
   return items;
+}
+export function blockContext(tx) {
+  const height = Number(tx?.block_number ?? tx?.blockNumber);
+  const hash = tx?.block_hash || tx?.blockHash;
+  return {...(Number.isSafeInteger(height) && height >= 0 ? {blockNumber:height} : {}),
+    ...(/^0x[0-9a-f]{64}$/i.test(hash || "") ? {blockHash:hash.toLowerCase()} : {})};
+}
+export function explorerRows(items, stream, chain, tx = {}) {
+  return items.flatMap(item => {
+    const decimals = item.token?.decimals;
+    const bad = stream === "token-transfers" && (decimals == null || !Number.isInteger(Number(decimals)) || Number(decimals)<0 || Number(decimals)>36);
+    const input = bad ? {...item,token:{...item.token,decimals:0}} : item;
+    return blockscoutRows([input],stream,chain).map(row => ({...row,...blockContext(tx),...blockContext(item),
+      ...(bad ? {metadataError:"代币精度不可用；原始数量保留，暂不计账"} : {})}));
+  });
 }
 export async function scanEVM(
   chain,
@@ -222,7 +233,7 @@ export async function scanEVM(
           !Number.isSafeInteger(height(x)) ||
           height(x) >= saved.stopBlock,
       );
-      const rows = blockscoutRows(items, stream, chain);
+      const rows = explorerRows(items, stream, chain);
       cursor = reached ? null : data.next_page_params;
       await onPage(rows, {
         stream,
@@ -239,9 +250,10 @@ export async function scanEVM(
   }
   return;
 }
-export async function inspectEVM(chain, hash, key, routers, rows, signal) {
+export async function inspectEVM(chain, hash, key, routers, rows, signal, policy = {}) {
+  policy = {...policy, fresh: policy.fresh || rows.some(r=>r.canonicalMissing)};
   rows = rows.filter((r) => !r.feeEvent);
-  const tx = await bs(chain.id, `transactions/${hash}`, key, {}, signal);
+  const tx = await bs(chain.id, `transactions/${hash}`, key, {}, signal, policy);
   if (canonical(chain.id, tx.hash) !== canonical(chain.id, hash))
     throw Error("数据源返回了其他交易，核验已停止");
   if (["error", "failed", "reverted"].includes(tx.status))
@@ -249,20 +261,21 @@ export async function inspectEVM(chain, hash, key, routers, rows, signal) {
   if (!["ok", "success"].includes(tx.status) || !tx.from?.hash)
     throw Error("交易尚未成功确认或详情不完整");
   tx.from.is_contract ??= true;
-  if (!rows.length || rows.some((r) => r.importedUnverified)) {
+  if (policy.fresh || !rows.length || rows.some((r) => r.importedUnverified || r.canonicalMissing)) {
     const [tokens, internal] = await Promise.all([
-      pages(chain.id, `transactions/${hash}/token-transfers`, key, signal),
+      pages(chain.id, `transactions/${hash}/token-transfers`, key, signal, policy),
       pages(
         chain.id,
         `transactions/${hash}/internal-transactions`,
         key,
         signal,
+        policy,
       ),
     ]);
     rows = [
-      ...blockscoutRows([tx], "transactions", chain),
-      ...blockscoutRows(tokens, "token-transfers", chain),
-      ...blockscoutRows(internal, "internal-transactions", chain),
+      ...explorerRows([tx], "transactions", chain, tx),
+      ...explorerRows(tokens, "token-transfers", chain, tx),
+      ...explorerRows(internal, "internal-transactions", chain, tx),
     ];
     if (
       rows.some(
@@ -273,46 +286,44 @@ export async function inspectEVM(chain, hash, key, routers, rows, signal) {
   }
   const incoming = rows.some((r) => r.direction === "in"),
     logs = incoming
-      ? await pages(chain.id, `transactions/${hash}/logs`, key, signal)
+      ? await pages(chain.id, `transactions/${hash}/logs`, key, signal, policy)
       : [];
-  const tokenMeta = {};
-  for (const r of rows)
-    tokenMeta[r.asset] = { symbol: r.symbol, decimals: r.decimals };
+  const tokenMeta = {}, missing = new Set();
+  for (const r of rows) {
+    tokenMeta[r.asset] = {symbol:r.symbol,decimals:r.decimals,...(r.metadataError ? {metadataError:r.metadataError} : {})};
+    if (r.metadataError && r.asset !== "native") missing.add(r.asset);
+  }
   for (const l of logs) {
-    if (
-      !l.data ||
-      ![194, 258].includes(l.data.length) ||
-      "0x" + l.data.slice(154, 194).toLowerCase() !== EVM
-    )
-      continue;
-    const token = "0x" + l.data.slice(26, 66).toLowerCase();
-    if (
-      !["0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"].includes(token) &&
-      !tokenMeta[token] &&
-      l.topics?.some((t) => FEE_TOPICS.includes(t))
-    ) {
-      const m = await bs(chain.id, `tokens/${token}`, key, {}, signal);
-      tokenMeta[token] = m;
+    if (l.data && [194,258].includes(l.data.length) && "0x"+l.data.slice(154,194).toLowerCase()===EVM && l.topics?.some(t=>FEE_TOPICS.includes(t))) {
+      const asset="0x"+l.data.slice(26,66).toLowerCase();
+      if (asset!=="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" && !tokenMeta[asset]) missing.add(asset);
     }
+    const asset=settlementFeeAsset(l);
+    if(asset && asset!=="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" && !tokenMeta[asset]) missing.add(asset);
   }
-  for (const l of logs) {
-    const asset = settlementFeeAsset(l);
-    if (
-      asset &&
-      asset !== "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" &&
-      !tokenMeta[asset]
-    )
-      tokenMeta[asset] = await bs(chain.id, `tokens/${asset}`, key, {}, signal);
-  }
+  await mapLimit([...missing],2,async asset=> {
+    try {
+      const meta=await bs(chain.id,`tokens/${asset}`,key,{},signal,policy);
+      if(meta.decimals==null || !Number.isInteger(Number(meta.decimals)) || Number(meta.decimals)<0 || Number(meta.decimals)>36) throw Error("代币精度不可用");
+      tokenMeta[asset]={symbol:meta.symbol||asset,decimals:Number(meta.decimals)};
+    } catch(error) {
+      if(signal?.aborted) throw error;
+      tokenMeta[asset]={symbol:asset,decimals:0,metadataError:"代币元数据核验失败："+error.message};
+    }
+  });
   const fees = decodeFeeLogs(
     logs,
     chain,
     tx,
     tokenMeta,
     routers[chain.id] || [],
-  );
+  ).map(r=>({...r,...blockContext(tx),...(tokenMeta[r.asset]?.metadataError ? {metadataError:tokenMeta[r.asset].metadataError} : {})}));
   const replace = rows.map((r) => {
-    const next = { ...r, ...paymentEvidence(tx, r) };
+    const next = { ...r, ...paymentEvidence(tx, r), ...blockContext(tx) };
+    const meta=tokenMeta[r.asset];
+    delete next.metadataError;
+    delete next.canonicalMissing;
+    if(meta) Object.assign(next,meta);
     delete next.inspectionError;
     delete next.importedUnverified;
     if (next.supersededBy && !next.reviewed) {
@@ -359,9 +370,8 @@ export async function scanSolana(key, onPage, onProgress, signal, start = {}) {
       ? data.findIndex((x) => x.signature === start.until)
       : -1;
     const fresh = stop < 0 ? data : data.slice(0, stop);
-    const rows = [];
-    for (const item of fresh) {
-      if (item.transactionError) continue;
+    const parsedRows = await mapLimit(fresh, 2, async item => {
+      if (item.transactionError) return [];
       const rpc = await request(
         `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}`,
         {
@@ -388,8 +398,9 @@ export async function scanSolana(key, onPage, onProgress, signal, start = {}) {
         r.suggestedTrader = item.feePayer;
         r.source = item.source || "UNKNOWN";
       }
-      rows.push(...parsed);
-    }
+      return parsed;
+    });
+    const rows=parsedRows.flat();
     before = data.length ? data.at(-1).signature : null;
     await onPage(rows, {
       stream: "solana",
@@ -427,31 +438,5 @@ export async function inspectSolana(signature, key, signal) {
     signal,
   );
   const rows = parseSolanaTransaction(rpc.result, signature);
-  // Proven router transfers need no extra paid enhanced-parser lookup.
-  if (
-    rows.length &&
-    rows.every(
-      (r) =>
-        r.solanaCommission ||
-        r.solanaSelfSwap ||
-        (r.asset === "native" && r.direction === "in" && r.raw === "1"),
-    )
-  )
-    return rows;
-  const enhanced = await request(
-    `https://api.helius.xyz/v0/transactions?api-key=${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transactions: [signature] }),
-    },
-    signal,
-  );
-  const item = enhanced?.find?.((t) => t.signature === signature);
-  if (!item) throw Error("Helius 未返回此交易的解析详情");
-  return rows.map((r) => ({
-    ...r,
-    suggestedTrader: item.feePayer,
-    source: item.source || "UNKNOWN",
-  }));
+  return rows;
 }

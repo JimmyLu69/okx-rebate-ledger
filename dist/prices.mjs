@@ -1,5 +1,5 @@
 import { fixedUsdPrice } from "./stablecoins.mjs";
-import { mapLimit, noteRequest, providerName } from "./network.mjs";
+import { mapLimit, noteRequest, providerName, boundedResponseText } from "./network.mjs";
 const quoteCache = new Map(),
   quoteRequests = new Map();
 const priceChains = {
@@ -63,11 +63,20 @@ export async function lookupPrices(assets, fetcher = fetch) {
         noteRequest(provider, "errors");
         throw Error("报价接口 HTTP " + r.status);
       }
-      const data = await r.json();
+      const {text,bytes:responseBytes}=await boundedResponseText(r,2*1024*1024);
+      noteRequest(provider,"bytes",responseBytes);
+      const raw=JSON.parse(text);
+      // Keep only fields used by valuation, not complete DEX pair descriptions.
+      const data=Array.isArray(raw)?raw.map(pair=>({chainId:pair.chainId,baseToken:{address:pair.baseToken?.address},priceUsd:pair.priceUsd,liquidity:{usd:pair.liquidity?.usd}}))
+        :Object.fromEntries(Object.entries(raw||{}).filter(([,q])=>q&&typeof q==='object'&&q.usd!==undefined).map(([id,q])=>[id,{usd:q.usd,last_updated_at:q.last_updated_at}]));
       if (useCache) {
-        quoteCache.set(url, { at: Date.now(), data });
-        while (quoteCache.size > 100)
-          quoteCache.delete(quoteCache.keys().next().value);
+        const bytes=new TextEncoder().encode(JSON.stringify(data)).byteLength,now=Date.now();
+        for(const [key,entry]of quoteCache)if(now-entry.at>=120000)quoteCache.delete(key);
+        if(bytes<=512*1024){
+          let total=[...quoteCache.values()].reduce((n,entry)=>n+entry.bytes,0);
+          while(quoteCache.size&&(quoteCache.size>=100||total+bytes>4*1024*1024)){const first=quoteCache.keys().next().value;total-=quoteCache.get(first).bytes;quoteCache.delete(first)}
+          quoteCache.set(url, {at:now,data,bytes});
+        }
       }
       return data;
     })();
@@ -118,7 +127,10 @@ export async function lookupPrices(assets, fetcher = fetch) {
     ],
     3,
     async (chain) => {
-      if (!priceChains[chain]) return;
+      if (!priceChains[chain]) {
+        errors.push("网络 " + chain + " 尚无此合约的报价源；金额保留，美元总额未包含未报价资产");
+        return;
+      }
       try {
         const wanted = assets.filter(
           (a) => a.chain === chain && a.asset !== "native",

@@ -270,3 +270,34 @@ test("BSC automatically skips proven empty history, but unsupported counting fal
     globalThis.fetch = original;
   }
 });
+
+test("cached Blockscout receipts do not reserve a network rate-limit slot", async () => {
+  const {bs}=await import('../dist/api.mjs');
+  configureEvidenceCache({active:true});
+  const options={body:JSON.stringify({chain:'8453',path:'transactions/'+hash,key:'synthetic',params:{}})};
+  await putEvidence(evidenceKey('/api/blockscout',options),{hash,status:'ok'});
+  const old=globalThis.fetch;let calls=0;
+  globalThis.fetch=async()=>{calls++;throw Error('No network expected')};
+  try {
+    const start=performance.now();
+    await bs('8453','transactions/'+hash,'synthetic');
+    await bs('8453','transactions/'+hash,'synthetic');
+    assert.equal(calls,0);assert(performance.now()-start<100);
+  } finally {globalThis.fetch=old;configureEvidenceCache({active:false})}
+});
+
+test("storage cache misses settle and a stalled IDB lookup respects cancellation", async () => {
+  const previous=globalThis.indexedDB;let stall=false;
+  globalThis.indexedDB={open(){
+    const open={};queueMicrotask(()=>{open.result={close(){},transaction(){return {objectStore(){return {get(){const r={};if(!stall)queueMicrotask(()=>{r.result=undefined;r.onsuccess()});return r}}}}}};open.onsuccess()});return open;
+  }};
+  try {
+    const cache=await import('../dist/evidence-cache.mjs?isolated-storage-regression');
+    cache.configureEvidenceCache({active:true});
+    assert.equal(await cache.getEvidence('missing'),null);
+    stall=true;const controller=new AbortController();
+    const result=cache.getEvidence('stalled',{signal:controller.signal});
+    controller.abort(Error('synthetic stop'));
+    await assert.rejects(result,/synthetic stop/);
+  } finally {globalThis.indexedDB=previous}
+});

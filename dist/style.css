@@ -1149,3 +1149,50 @@ dialog::backdrop {
     scroll-behavior: auto !important;
   }
 }
+
+/* Keep actions close to the data and the mobile first screen compact. */
+.filterchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+.filterchip { min-height: 32px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding: 4px 9px; background: var(--soft); color: var(--text); border: 1px solid var(--line); font-size: 12px; }
+.emptyactions { display: flex; justify-content: center; gap: 10px; padding-top: 14px; }
+.importfacts { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; font-size: 13px; }
+.importfacts dt { color: var(--muted); }
+.importfacts dd { margin: 0; overflow-wrap: anywhere; }
+#settings .dialogactions { position: sticky; bottom: -24px; background: var(--surface); padding: 12px 0 max(12px, env(safe-area-inset-bottom)); z-index: 3; }
+#settingsStatus { margin-right: auto; max-width: 50%; }
+#backupError, #importError { overflow-wrap: anywhere; }
+#detail { max-height: 100dvh; height: 100dvh; margin: 0 0 0 auto; max-width: min(680px, 100vw); border-radius: 0; }
+#detail .dialoghead { margin-bottom: 8px; }
+.record > dl { margin: 12px 0; }
+.listtools:has(#filterSummary:empty) { min-height: 0; }
+@media (min-width: 601px) {
+  .overview { padding: 24px 0 18px; }
+  #heroAmount { font-size: clamp(36px, 4vw, 52px); }
+  .tablewrap td { padding-top: 11px; padding-bottom: 11px; }
+}
+@media (max-width: 600px) {
+  header { min-height: 64px; }
+  .overview { padding: 12px 0 8px; gap: 10px; }
+  #heroAmount { font-size: 36px; margin: 3px 0; }
+  .balancehero > p { font-size: 12px; }
+  #heroDetail { font-size: 11px; }
+  .metrics p { font-size: 11px; }
+  .metrics strong { font-size: 17px; }
+  .statusline { margin-bottom: 4px; font-size: 11px; }
+  .searchrow { flex-wrap: nowrap; padding-top: 8px; gap: 6px; }
+  .searchrow input { flex: 1 1 auto; min-width: 0; }
+  .searchrow select { flex: 0 0 106px; max-width: 106px; font-size: 12px; }
+  #resetFilters { font-size: 11px; padding: 6px; }
+  .listtools { flex-direction: row; align-items: center; padding: 2px 0; }
+  .listtools .actions { width: auto; margin-left: auto; gap: 3px; }
+  #priceStatus { display: none; }
+  #filterSummary { font-size: 10px; }
+  .listtools button { font-size: 12px; min-height: 40px; padding: 6px; }
+  .tablewrap tr:not(.addresshead):not(.assetfold) { padding: 12px 0; gap: 10px 8px; }
+  .addresssummary { gap: 8px; }
+  #settings .dialogactions { bottom: -18px; flex-wrap: wrap; }
+  #settingsStatus { max-width: 100%; flex-basis: 100%; font-size: 12px; }
+  #detail { width: 100vw; max-width: 100vw; padding: 16px; }
+  #detail .dialoghead { top: -16px; }
+  #detailPager { position: sticky; bottom: -16px; background: var(--surface); padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .importfacts { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+}
