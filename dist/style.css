@@ -92,7 +92,7 @@ button {
   background: var(--accent);
   color: var(--surface);
   border: 1px solid var(--accent);
-  border-radius: 3px;
+  border-radius: 7px;
   padding: 9px 15px;
   white-space: nowrap;
 }
@@ -103,7 +103,15 @@ button:disabled {
   opacity: 0.45;
   cursor: default;
 }
-.secondary,
+.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: transparent;
+}
+.secondary:hover, .textbutton:hover, .rowaction:hover, .filebutton:hover {
+  background: var(--hover);
+  filter: none;
+}
 .filebutton {
   background: transparent;
   color: var(--text);
@@ -312,16 +320,28 @@ header {
 .filtermenu summary {
   cursor: pointer;
   list-style: none;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
   min-height: 44px;
+}
+.filtermenu summary::after {
+  content: "⌄";
+  margin-left: 4px;
+  color: var(--muted);
+}
+.filtermenu summary:hover, .filtermenu[open] summary {
+  background: var(--hover);
 }
 .filtermenu summary::-webkit-details-marker {
   display: none;
 }
 .filtermenu.has-selection summary {
   color: var(--accent);
-  border-color: var(--accent);
+  background: var(--soft);
 }
 .filtercount:empty {
   display: none;
@@ -647,7 +667,7 @@ dialog::backdrop {
   align-items: center;
   padding: 9px 14px;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 7px;
 }
 .filebutton input {
   position: absolute;
@@ -1148,7 +1168,7 @@ dialog::backdrop {
 
 /* Keep actions close to the data and the mobile first screen compact. */
 .filterchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
-.filterchip { min-height: 32px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding: 4px 9px; background: var(--soft); color: var(--text); border: 1px solid var(--line); font-size: 12px; }
+.filterchip { min-height: 32px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding: 4px 9px; background: var(--soft); color: var(--text); border: 1px solid transparent; border-radius: 999px; font-size: 12px; }
 .emptyactions { display: flex; justify-content: center; gap: 10px; padding-top: 14px; }
 .importfacts { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; font-size: 13px; }
 .importfacts dt { color: var(--muted); }
