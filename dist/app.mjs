@@ -374,7 +374,9 @@ function renderFilterChips() {
   $("filterChips").innerHTML = chips.join("");
   $("filterChips").hidden = !chips.length;
   $("resetFilters").hidden = !chips.length;
-  $("filterSummary").textContent = chips.length ? "汇总仅含当前筛选范围" + (!raw && Number($("minimumUsd").value) ? " · 缺报价地址保留" : "") : "";
+  $("filterSummary").textContent = view === "spam"
+    ? `疑似垃圾共 ${model().spam.length} 条 · 含 Base 稳定币直接转入低于 0.001 USD、1 lamport SOL；可逐笔保留`
+    : chips.length ? "汇总仅含当前筛选范围" + (!raw && Number($("minimumUsd").value) ? " · 缺报价地址保留" : "") : "";
 }
 $("filterChips").onclick = event => {
   const chip = event.target.closest("[data-clear-filter]");
@@ -416,11 +418,9 @@ function render() {
           minimumFractionDigits: 2,
           maximumFractionDigits: 4,
         });
-  $("heroDetail").textContent = missing
-    ? `${missing} 项缺少报价，未计入总额`
-    : state.records.length
-      ? `已核实账目 · ${data.pending.length ? data.pending.length + " 条待核对未计入" : "当前筛选范围"}`
-      : "先设置收款钱包与数据源";
+  $("heroDetail").textContent = state.records.length
+    ? [missing ? `${missing} 项缺少报价` : "当前筛选范围", data.pending.length ? `${data.pending.length} 条待核对未计入` : ""].filter(Boolean).join(" · ")
+    : "先设置收款钱包与数据源";
   const cov = coverage(),
     done = cov.filter((c) => c.status === "complete").length;
   $("metrics").innerHTML =
@@ -504,7 +504,7 @@ function render() {
             const net = BigInt(g.due) - BigInt(g.paid),
               amountCell = (raw, quote) =>
                 `<span class="quantity" title="${esc(format(raw, g.decimals))}">${esc(quantity(raw, g.decimals))}</span>${g.price?.fixed ? "" : `<span class="cellsub">${g.priced ? usd(quote) : "缺少报价"}</span>`}`;
-            return `<tr><td>${currency(g)}</td><td class="num">${amountCell(g.due, g.usdDue)}</td><td class="num">${amountCell(g.paid, g.usdPaid)}</td><td class="num ${net < 0n ? "warning" : "amount"}">${amountCell(net, (g.usdDue || 0) - (g.usdPaid || 0))}</td><td>${badge(g)}</td><td><button class="rowaction" data-group="${esc(g.key)}">明细</button></td></tr>`;
+            return `<tr><td>${currency(g)}<span class="cellsub">${g.price?.fixed ? "固定记账价 1 USD" : g.price?.at ? `报价 ${esc(new Date(g.price.at).toLocaleString("zh-CN"))}` : ""}</span></td><td class="num">${amountCell(g.due, g.usdDue)}</td><td class="num">${amountCell(g.paid, g.usdPaid)}</td><td class="num ${net < 0n ? "warning" : "amount"}">${amountCell(net, (g.usdDue || 0) - (g.usdPaid || 0))}</td><td>${badge(g)}</td><td><button class="rowaction" data-group="${esc(g.key)}">明细</button></td></tr>`;
           })
           .join("") +
         (address.assets.length > 5
@@ -1002,7 +1002,7 @@ function renderDetails() {
         ["日志发送", row.from],
         ["日志接收", row.to],
       ];
-      return `<article class="record"><strong>${esc(type)} · ${esc(format(row.raw, row.decimals))} ${esc(row.symbol)}</strong><p class="evidence">${esc(row.spamReason || row.reviewReason || row.exclusionReason || row.evidence || "")}</p><dl>${fields.map(([label, value]) => `<dt>${esc(label)}</dt><dd class="mono">${esc(value)}</dd>`).join("")}</dl><div class="actions"><a href="${esc(link(row))}" target="_blank" rel="noreferrer">链上交易 ↗</a><button class="textbutton" data-copy="${esc(format(row.raw, row.decimals))}">复制完整金额</button></div>${!row.supersededBy && row.raw !== "0" ? `<details class="decisionform"><summary>${decision ? "修改人工判断" : "人工核对"}</summary><p class="metadata">${row.manualBlocked ? esc(row.manualBlocked) : "按实际用途判断，可随时撤销。"}${row.manualConflict ? esc(row.manualConflict) : ""}${row.importedUnverified ? "此记录来自备份；人工用途已保留，需先核验交易与金额才会生效。" : ""}</p><form data-decision="${esc(row.id)}"><label class="field">用途<select name="kind"><option value="pending">待核对</option>${row.manualBlocked ? "" : row.direction === "in" ? '<option value="commission">返佣</option>' : '<option value="refund">返还</option>'}<option value="ignore">其他用途，不计入</option></select></label><label class="field">归属地址<input name="trader" value="${esc(decision?.trader || (["commission", "refund"].includes(row.kind) ? row.trader : ""))}" autocomplete="off" placeholder="最终被邀请地址"></label><label class="field">判断原因<input name="reason" maxlength="500" value="${esc(decision?.reason || "")}" required placeholder="用途或凭证说明"></label><div class="actions"><button type="submit" ${busy ? "disabled" : ""}>保存判断</button>${decision ? `<button class="secondary" type="button" data-undo="${esc(row.id)}">撤销人工判断</button>` : ""}</div></form></details>` : ""}${row.spam ? `<div class="actions"><button class="secondary" data-keep="${esc(row.id)}">仅保留这笔记录</button>${row.asset !== "native" ? `<button class="secondary" data-trust="${esc(row.id)}">信任此合约</button>` : ""}</div>` : ""}<details><summary>开发者诊断</summary><button class="secondary" data-case="${esc(row.id)}">复制案例</button></details></article>`;
+      return `<article class="record"><strong>${esc(type)} · ${esc(format(row.raw, row.decimals))} ${esc(row.symbol)}</strong><p class="evidence">${esc(row.spamReason || row.reviewReason || row.exclusionReason || row.evidence || "")}</p><dl>${fields.map(([label, value]) => `<dt>${esc(label)}</dt><dd${label === "网络" ? "" : ' class="mono"'}>${esc(value)}</dd>`).join("")}</dl><div class="actions"><a href="${esc(link(row))}" target="_blank" rel="noreferrer">链上交易 ↗</a><button class="textbutton" data-copy="${esc(format(row.raw, row.decimals))}">复制完整金额</button></div>${!row.supersededBy && row.raw !== "0" ? `<details class="decisionform"><summary>${decision ? "修改人工判断" : "人工核对"}</summary><p class="metadata">${row.manualBlocked ? esc(row.manualBlocked) : "按实际用途判断，可随时撤销。"}${row.manualConflict ? esc(row.manualConflict) : ""}${row.importedUnverified ? "此记录来自备份；人工用途已保留，需先核验交易与金额才会生效。" : ""}</p><form data-decision="${esc(row.id)}"><label class="field">用途<select name="kind"><option value="pending">待核对</option>${row.manualBlocked ? "" : row.direction === "in" ? '<option value="commission">返佣</option>' : '<option value="refund">返还</option>'}<option value="ignore">其他用途，不计入</option></select></label><label class="field">归属地址<input name="trader" value="${esc(decision?.trader || (["commission", "refund"].includes(row.kind) ? row.trader : ""))}" autocomplete="off" placeholder="最终被邀请地址"></label><label class="field">判断原因<input name="reason" maxlength="500" value="${esc(decision?.reason || "")}" required placeholder="用途或凭证说明"></label><div class="actions"><button type="submit" ${busy ? "disabled" : ""}>保存判断</button>${decision ? `<button class="secondary" type="button" data-undo="${esc(row.id)}">撤销人工判断</button>` : ""}</div></form></details>` : ""}${row.spam ? `<div class="actions"><button class="secondary" data-keep="${esc(row.id)}">仅保留这笔记录</button>${row.asset !== "native" ? `<button class="secondary" data-trust="${esc(row.id)}">信任此合约</button>` : ""}</div>` : ""}<details><summary>开发者诊断</summary><button class="secondary" data-case="${esc(row.id)}">复制案例</button></details></article>`;
     })
     .join("");
   for (const form of $("detailBody").querySelectorAll("[data-decision]"))

@@ -23,7 +23,6 @@
   --accent: #923324;
   --positive: #3e623e;
   --red: #a2292c;
-  --shadow: 0 16px 48px #211c2424;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -38,7 +37,6 @@
   --accent: #eea087;
   --positive: #b3caa0;
   --red: #f1a3a5;
-  --shadow: 0 16px 48px #0006;
 }
 * {
   box-sizing: border-box;
@@ -344,7 +342,6 @@ header {
   background: var(--surface);
   border: 1px solid var(--line);
   padding: 6px;
-  box-shadow: var(--shadow);
 }
 .optionsearch {
   position: absolute;
@@ -558,7 +555,6 @@ dialog {
   max-width: calc(100% - 32px);
   max-height: 90dvh;
   padding: 24px;
-  box-shadow: var(--shadow);
 }
 dialog::backdrop {
   background: #0009;
@@ -1166,26 +1162,26 @@ dialog::backdrop {
 .listtools:has(#filterSummary:empty) { min-height: 0; }
 @media (min-width: 601px) {
   .overview { padding: 24px 0 18px; }
-  #heroAmount { font-size: clamp(36px, 4vw, 52px); }
+  #heroAmount { font-size: clamp(28px, 3vw, 36px); }
   .tablewrap td { padding-top: 11px; padding-bottom: 11px; }
 }
 @media (max-width: 600px) {
   header { min-height: 64px; }
   .overview { padding: 12px 0 8px; gap: 10px; }
-  #heroAmount { font-size: 36px; margin: 3px 0; }
+  #heroAmount { font-size: 28px; margin: 3px 0; }
   .balancehero > p { font-size: 12px; }
-  #heroDetail { font-size: 11px; }
-  .metrics p { font-size: 11px; }
+  #heroDetail { font-size: 12px; }
+  .metrics p { font-size: 12px; }
   .metrics strong { font-size: 17px; }
-  .statusline { margin-bottom: 4px; font-size: 11px; }
+  .statusline { margin-bottom: 4px; font-size: 12px; }
   .searchrow { flex-wrap: nowrap; padding-top: 8px; gap: 6px; }
   .searchrow input { flex: 1 1 auto; min-width: 0; }
   .searchrow select { flex: 0 0 106px; max-width: 106px; font-size: 12px; }
-  #resetFilters { font-size: 11px; padding: 6px; }
+  #resetFilters { font-size: 12px; padding: 6px; }
   .listtools { flex-direction: row; align-items: center; padding: 2px 0; }
   .listtools .actions { width: auto; margin-left: auto; gap: 3px; }
   #priceStatus { display: none; }
-  #filterSummary { font-size: 10px; }
+  #filterSummary { font-size: 12px; }
   .listtools button { font-size: 12px; min-height: 40px; padding: 6px; }
   .tablewrap tr:not(.addresshead):not(.assetfold) { padding: 12px 0; gap: 10px 8px; }
   .addresssummary { gap: 8px; }

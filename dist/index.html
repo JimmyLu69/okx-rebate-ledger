@@ -39,7 +39,7 @@
         <div class="balancehero">
           <p>当前筛选 · 已核实待返金额 <span>USD</span></p>
           <strong id="heroAmount">—</strong>
-          <p id="heroDetail">设置钱包后开始同步</p>
+          <p id="heroDetail"></p>
         </div>
         <div class="summaryside">
           <div id="metrics" class="metrics"></div>
@@ -355,6 +355,7 @@
           <option value="session">仅本次会话</option>
         </select></label
       >
+      <p class="metadata">保存在此设备的凭证未加密；可选择仅本次会话。</p>
       <details class="settingshelp">
         <summary>高级：历史范围与合约名单</summary>
         <label class="field"
@@ -530,9 +531,9 @@
       </div>
       <div id="recheckRows" class="reportrows"></div>
       <div class="actions">
-        <button id="reportPrev" class="secondary">←</button
+        <button id="reportPrev" class="secondary" aria-label="上一页">←</button
         ><span id="reportPage"></span
-        ><button id="reportNext" class="secondary">→</button>
+        ><button id="reportNext" class="secondary" aria-label="下一页">→</button>
       </div>
     </dialog>
     <dialog id="diagnostics" aria-labelledby="diagnosticsTitle">
