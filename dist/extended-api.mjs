@@ -32,7 +32,7 @@ export async function rpc(url, method, params, signal, policy = {}) {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        body: JSON.stringify(linea ? { method, params } : { jsonrpc: "2.0", id: 1, method, params }),
       },
       signal,
       { ...(linea ? { attempts: 1, timeoutMs: 22000 } : {}), ...policy },
