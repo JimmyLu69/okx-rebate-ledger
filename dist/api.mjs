@@ -386,7 +386,7 @@ export async function scanSolana(key, onPage, onProgress, signal, start = {}) {
               {
                 encoding: "jsonParsed",
                 commitment: "finalized",
-                maxSupportedTransactionVersion: 0,
+                maxSupportedTransactionVersion: 1,
               },
             ],
           }),
@@ -430,7 +430,7 @@ export async function inspectSolana(signature, key, signal) {
           {
             encoding: "jsonParsed",
             commitment: "finalized",
-            maxSupportedTransactionVersion: 0,
+            maxSupportedTransactionVersion: 1,
           },
         ],
       }),
